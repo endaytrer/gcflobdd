@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::gcflobdd::{node::GcflobddNode, return_map::ReturnMap};
+use crate::gcflobdd::{ReturnMapT, node::GcflobddNode, return_map::ReturnMap};
 
 #[derive(Clone, Hash)]
 pub(super) struct ConnectionT<'grammar, Handle> {
@@ -17,12 +17,28 @@ impl<'grammar, Handle: std::fmt::Debug> std::fmt::Debug for ConnectionT<'grammar
 }
 
 pub(crate) type Connection<'grammar> = ConnectionT<'grammar, ReturnMap>;
+pub(crate) type ConnectionPair<'grammar> = ConnectionT<'grammar, ReturnMapT<(usize, usize)>>;
 
 impl<'grammar> Connection<'grammar> {
     pub fn new(entry_point: Rc<GcflobddNode<'grammar>>) -> Self {
         Self {
             return_map: ReturnMap::new_sequential(entry_point.get_num_exits()),
             entry_point,
+        }
+    }
+}
+
+impl<'grammar> ConnectionT<'grammar, ReturnMapT<(usize, usize)>> {
+    pub fn flipped(&self) -> Self {
+        Self {
+            entry_point: self.entry_point.clone(),
+            return_map: ReturnMapT::new(
+                self.return_map
+                    .map_array
+                    .iter()
+                    .map(|(i, j)| (*j, *i))
+                    .collect(),
+            ),
         }
     }
 }

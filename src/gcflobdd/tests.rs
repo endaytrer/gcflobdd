@@ -90,10 +90,11 @@ fn _gen_balanced_grammar(level: usize) -> Vec<String> {
 
 #[test]
 fn test_nqueens() {
-    let n = 8;
+    let n = 12;
     // let l = (2.0 * (n as f64).log2()).ceil() as usize;
-    // let rules = gen_balanced_grammar(l);
+    // let rules = _gen_balanced_grammar(l);
     // let grammar = Grammar::new(&rules).unwrap();
+    // assert_eq!(grammar.root.num_vars, 128);
     let s2 = vec!["S1"; n].join(" ");
     let s2_gen_rule = format!("S2 -> {}", s2);
 
@@ -116,7 +117,7 @@ fn test_nqueens() {
     for i in 0..n {
         let mut condition = Gcflobdd::mk_false(&grammar, &context);
         for j in 0..n {
-            condition = condition.mk_op(&vars[i][j], |a, b| a | b, &context);
+            condition = condition.mk_or(&vars[i][j], &context);
         }
         or_batch.push(condition);
     }
@@ -133,18 +134,16 @@ fn test_nqueens() {
             /* No one in the same column */
             for l in 0..n {
                 if l != j {
-                    let not_vars_il = vars[i][l].mk_op(&vars[i][l], |x, _| !x, &context);
-                    let mp = vars[i][j].mk_op(&not_vars_il, |x, y| !x | y, &context);
-                    a = a.mk_op(&mp, |x, y| x & y, &context);
+                    let mp = vars[i][j].mk_implies(&vars[i][l].mk_not(), &context);
+                    a = a.mk_and(&mp, &context);
                 }
             }
 
             /* No one in the same row */
             for k in 0..n {
                 if k != i {
-                    let not_vars_kj = vars[k][j].mk_op(&vars[k][j], |x, _| !x, &context);
-                    let mp = vars[i][j].mk_op(&not_vars_kj, |x, y| !x | y, &context);
-                    b = b.mk_op(&mp, |x, y| x & y, &context);
+                    let mp = vars[i][j].mk_implies(&vars[k][j].mk_not(), &context);
+                    b = b.mk_and(&mp, &context);
                 }
             }
 
@@ -154,9 +153,8 @@ fn test_nqueens() {
                 if ll >= 0 && ll < n as i32 {
                     let ll = ll as usize;
                     if k != i {
-                        let not_vars_kll = vars[k][ll].mk_op(&vars[k][ll], |x, _| !x, &context);
-                        let mp = vars[i][j].mk_op(&not_vars_kll, |x, y| !x | y, &context);
-                        c = c.mk_op(&mp, |x, y| x & y, &context);
+                        let mp = vars[i][j].mk_implies(&vars[k][ll].mk_not(), &context);
+                        c = c.mk_and(&mp, &context);
                     }
                 }
             }
@@ -167,16 +165,15 @@ fn test_nqueens() {
                 if ll >= 0 && ll < n as i32 {
                     let ll = ll as usize;
                     if k != i {
-                        let not_vars_kll = vars[k][ll].mk_op(&vars[k][ll], |x, _| !x, &context);
-                        let mp = vars[i][j].mk_op(&not_vars_kll, |x, y| !x | y, &context);
-                        d = d.mk_op(&mp, |x, y| x & y, &context);
+                        let mp = vars[i][j].mk_implies(&vars[k][ll].mk_not(), &context);
+                        d = d.mk_and(&mp, &context);
                     }
                 }
             }
 
-            c = c.mk_op(&d, |x, y| x & y, &context);
-            b = b.mk_op(&c, |x, y| x & y, &context);
-            a = a.mk_op(&b, |x, y| x & y, &context);
+            c = c.mk_and(&d, &context);
+            b = b.mk_and(&c, &context);
+            a = a.mk_and(&b, &context);
             row.push(a);
         }
         imp_batch.push(row);
@@ -185,15 +182,20 @@ fn test_nqueens() {
     let mut queen = Gcflobdd::mk_true(&grammar, &context);
 
     for i in 0..n {
-        queen = queen.mk_op(&or_batch[i], |a, b| a & b, &context);
+        println!("Combining OR condition for row {} / {}", i, n);
+        queen = queen.mk_and(&or_batch[i], &context);
     }
 
     for i in 0..n {
         let mut tmp_queen = Gcflobdd::mk_true(&grammar, &context);
         for j in 0..n {
-            tmp_queen = tmp_queen.mk_op(&imp_batch[i][j], |a, b| a & b, &context);
+            println!(
+                "Combining implication condition for position ({}, {}) / {}",
+                i, j, n
+            );
+            tmp_queen = tmp_queen.mk_and(&imp_batch[i][j], &context);
         }
-        queen = queen.mk_op(&tmp_queen, |a, b| a & b, &context);
+        queen = queen.mk_and(&tmp_queen, &context);
     }
 
     let path = queen.find_one_satisfiable_assignment().unwrap();

@@ -213,7 +213,10 @@ impl<'grammar> GcflobddNode<'grammar> {
     ) -> ConnectionT<'grammar, ReturnMapT<(usize, usize)>> {
         // should be the same grammar
         debug_assert_eq!(self.grammar, rhs.grammar);
-        match (&self.node, &rhs.node) {
+        if let Some(t) = context.borrow_mut().get_pair_product_cache(self, rhs) {
+            return t;
+        }
+        let ans = match (&self.node, &rhs.node) {
             (GcflobddNodeType::Internal(self_node), GcflobddNodeType::Internal(rhs_node)) => {
                 if self.num_exits == 1 && rhs.num_exits == 1 {
                     return ConnectionT {
@@ -334,10 +337,18 @@ impl<'grammar> GcflobddNode<'grammar> {
                 return_map: ReturnMapT::new(vec![(0, 0), (1, 1)]),
             },
             _ => unreachable!("Invalid configuration for grammar"),
-        }
+        };
+        context
+            .borrow_mut()
+            .set_pair_product_cache(self, rhs, ans.clone());
+        ans
     }
     pub fn reduce(&self, reduce_map: Vec<usize>, context: &RefCell<Context<'grammar>>) -> Rc<Self> {
-        match &self.node {
+        if let Some(t) = context.borrow_mut().get_reduction_cache(self, &reduce_map) {
+            return t;
+        }
+        let cache_reduce_map = reduce_map.clone();
+        let ans = match &self.node {
             GcflobddNodeType::DontCare => {
                 debug_assert!(reduce_map == [0]);
                 context.borrow_mut().get_gcflobdd_node(self).unwrap()
@@ -434,7 +445,11 @@ impl<'grammar> GcflobddNode<'grammar> {
                 })
             }
             GcflobddNodeType::Bdd(bdd_node) => todo!(),
-        }
+        };
+        context
+            .borrow_mut()
+            .set_reduction_cache(self, cache_reduce_map, ans.clone());
+        ans
     }
 }
 
