@@ -1,4 +1,5 @@
 use crate::gcflobdd::node::GcflobddNode;
+use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 use std::{collections::HashMap, rc::Rc};
 
@@ -8,6 +9,9 @@ pub struct Context<'grammar> {
     // TODO: add operation cache
 }
 impl<'grammar> Context<'grammar> {
+    pub fn new() -> RefCell<Self> {
+        RefCell::new(Self::default())
+    }
     pub(super) fn add_gcflobdd_node(
         &mut self,
         node: GcflobddNode<'grammar>,

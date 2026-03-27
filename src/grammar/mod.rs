@@ -129,7 +129,7 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct GrammarNode {
     pub num_vars: usize,
     pub node: GrammarNodeType,
@@ -137,7 +137,7 @@ pub(crate) struct GrammarNode {
 
 pub(crate) type InternalGrammarNodeType = Vec<Rc<GrammarNode>>;
 pub(crate) type BddNodeType = usize;
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum GrammarNodeType {
     Internal(InternalGrammarNodeType),
     Bdd(BddNodeType),

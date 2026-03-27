@@ -18,10 +18,10 @@ impl<'grammar, Handle: std::fmt::Debug> std::fmt::Debug for ConnectionT<'grammar
 
 pub(crate) type Connection<'grammar> = ConnectionT<'grammar, ReturnMap>;
 
-impl<'grammar> ConnectionT<'grammar, ReturnMap> {
+impl<'grammar> Connection<'grammar> {
     pub fn new(entry_point: Rc<GcflobddNode<'grammar>>) -> Self {
         Self {
-            return_map: ReturnMap::new_sequential(entry_point.get_num_exits() as i32),
+            return_map: ReturnMap::new_sequential(entry_point.get_num_exits()),
             entry_point,
         }
     }

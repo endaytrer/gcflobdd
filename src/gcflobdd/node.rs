@@ -16,7 +16,7 @@ use std::{
 pub(super) struct GcflobddNode<'grammar> {
     num_exits: usize,
     hash_cache: RefCell<Option<u64>>,
-    grammar: &'grammar Rc<GrammarNode>,
+    pub(super) grammar: &'grammar Rc<GrammarNode>,
     pub(super) node: GcflobddNodeType<'grammar>,
 }
 impl std::fmt::Debug for GcflobddNode<'_> {
@@ -39,6 +39,7 @@ impl Hash for GcflobddNode<'_> {
         let mut hash_cache = self.hash_cache.borrow_mut();
         let mut hasher = std::hash::DefaultHasher::new();
         self.node.hash(&mut hasher);
+        Rc::as_ptr(self.grammar).hash(&mut hasher);
         let value = hasher.finish();
         *hash_cache = Some(value);
         value.hash(state);
@@ -65,7 +66,7 @@ pub(super) enum GcflobddNodeType<'grammar> {
 }
 
 pub(super) struct InternalNode<'grammar> {
-    pub(super) connections: Vec<Vec<Connection<'grammar>>>,
+    pub(super) connections: Vec<Vec<ConnectionT<'grammar, ReturnMapT<usize>>>>,
     pub(super) grammar: &'grammar InternalGrammarNodeType,
 }
 
@@ -80,6 +81,7 @@ impl std::fmt::Debug for InternalNode<'_> {
 impl Hash for InternalNode<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.connections.hash(state);
+        self.grammar.hash(state);
     }
 }
 #[derive(Debug)]
@@ -156,7 +158,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                 }
                 GrammarNodeType::Bdd(_) => todo!(),
                 GrammarNodeType::Terminal => {
-                    assert_eq!(i, 0);
+                    debug_assert_eq!(i, 0);
                     GcflobddNodeType::Fork
                 }
             },
@@ -174,10 +176,7 @@ impl<'grammar> GcflobddNode<'grammar> {
             node: match &grammar.node {
                 GrammarNodeType::Internal(grammar_nodes) => {
                     GcflobddNodeType::Internal(InternalNode {
-                        connections: grammar_nodes
-                            .iter()
-                            .map(|gn| vec![Connection::new(Self::mk_no_distinction(gn, context))])
-                            .collect(),
+                        connections: vec![],
                         grammar: grammar_nodes,
                     })
                 }
@@ -188,15 +187,16 @@ impl<'grammar> GcflobddNode<'grammar> {
         context.borrow_mut().add_gcflobdd_node(ans)
     }
     pub fn find_one_path_to(&self, value: usize) -> Vec<Option<bool>> {
+        if self.num_exits == 1 {
+            debug_assert_eq!(value, 0);
+            return vec![None; self.grammar.num_vars];
+        }
         match &self.node {
             GcflobddNodeType::Internal(internal_node) => {
                 internal_node.find_one_path_to(value, 0, 0).unwrap()
             }
             GcflobddNodeType::Bdd(_) => todo!(),
-            GcflobddNodeType::DontCare => {
-                assert_eq!(value, 0);
-                vec![None]
-            }
+            GcflobddNodeType::DontCare => unreachable!(),
             GcflobddNodeType::Fork => {
                 if value == 0 {
                     vec![Some(false)]
@@ -212,7 +212,7 @@ impl<'grammar> GcflobddNode<'grammar> {
         context: &RefCell<Context<'grammar>>,
     ) -> ConnectionT<'grammar, ReturnMapT<(usize, usize)>> {
         // should be the same grammar
-        assert_eq!(self.grammar, rhs.grammar);
+        debug_assert_eq!(self.grammar, rhs.grammar);
         match (&self.node, &rhs.node) {
             (GcflobddNodeType::Internal(self_node), GcflobddNodeType::Internal(rhs_node)) => {
                 if self.num_exits == 1 && rhs.num_exits == 1 {
@@ -249,19 +249,14 @@ impl<'grammar> GcflobddNode<'grammar> {
                     fn merge_pair_list(
                         pair_list: &mut Vec<(usize, usize)>,
                         new_pair_list: impl IntoIterator<Item = (usize, usize)>,
-                    ) -> Vec<i32> {
-                        let old_pair_list = pair_list.clone();
+                    ) -> Vec<usize> {
                         new_pair_list
                             .into_iter()
                             .map(|p| {
-                                old_pair_list
-                                    .iter()
-                                    .position(|x| *x == p)
-                                    .map(|i| i as i32)
-                                    .unwrap_or_else(|| {
-                                        pair_list.push(p);
-                                        (pair_list.len() - 1) as i32
-                                    })
+                                pair_list.iter().position(|x| *x == p).unwrap_or_else(|| {
+                                    pair_list.push(p);
+                                    pair_list.len() - 1
+                                })
                             })
                             .collect()
                     }
@@ -282,8 +277,8 @@ impl<'grammar> GcflobddNode<'grammar> {
                                 let new_outer_pairs = new_inner_pairs.map_array.into_iter().map(
                                     |(inner_j, inner_k)| {
                                         (
-                                            self_connection.return_map.lookup(inner_j) as usize,
-                                            rhs_connection.return_map.lookup(inner_k) as usize,
+                                            self_connection.return_map.lookup(inner_j),
+                                            rhs_connection.return_map.lookup(inner_k),
                                         )
                                     },
                                 );
@@ -341,6 +336,106 @@ impl<'grammar> GcflobddNode<'grammar> {
             _ => unreachable!("Invalid configuration for grammar"),
         }
     }
+    pub fn reduce(&self, reduce_map: Vec<usize>, context: &RefCell<Context<'grammar>>) -> Rc<Self> {
+        match &self.node {
+            GcflobddNodeType::DontCare => {
+                debug_assert!(reduce_map == [0]);
+                context.borrow_mut().get_gcflobdd_node(self).unwrap()
+            }
+            GcflobddNodeType::Fork => {
+                if reduce_map == [0, 0] {
+                    return context
+                        .borrow_mut()
+                        .add_gcflobdd_node(Self::dont_care(self.grammar));
+                } else {
+                    debug_assert!(reduce_map == [0, 1]);
+                    return context.borrow_mut().get_gcflobdd_node(self).unwrap();
+                }
+            }
+            GcflobddNodeType::Internal(internal_node) => {
+                if reduce_map.iter().all(|x| *x == 0) {
+                    // all reduce to 0, return don't care
+                    return context.borrow_mut().add_gcflobdd_node(Self {
+                        num_exits: 1,
+                        hash_cache: RefCell::new(None),
+                        grammar: self.grammar,
+                        node: GcflobddNodeType::Internal(InternalNode {
+                            connections: vec![],
+                            grammar: internal_node.grammar,
+                        }),
+                    });
+                }
+                // If self is a don't care, the reduce_map should be &[0].
+                let num_exits = reduce_map.iter().max().unwrap() + 1;
+                let mut reduce_map_max = num_exits;
+                let mut layer_reduce_map = reduce_map;
+                let mut new_connection_list = Vec::with_capacity(internal_node.connections.len());
+                for connection_list in internal_node.connections.iter().rev() {
+                    let mut new_connection_hashes = vec![];
+                    let mut new_connections = vec![];
+                    let new_reduce_map = connection_list
+                        .iter()
+                        .map(|connection| {
+                            // first appearance of a value.
+                            let mut inverse_lookup = vec![None; reduce_map_max];
+                            let mut num_outs = 0;
+                            let mut new_return_map = vec![];
+                            let reduce_map_outer = connection
+                                .return_map
+                                .map_array
+                                .iter()
+                                .map(|x| {
+                                    let ans = layer_reduce_map[*x];
+                                    inverse_lookup[ans].get_or_insert_with(|| {
+                                        num_outs += 1;
+                                        new_return_map.push(ans);
+                                        num_outs - 1
+                                    });
+                                    ans
+                                })
+                                .collect::<Vec<_>>();
+                            let reduce_map_inner = reduce_map_outer
+                                .iter()
+                                .map(|x| inverse_lookup[*x].unwrap())
+                                .collect::<Vec<_>>();
+                            let new_entry =
+                                connection.entry_point.reduce(reduce_map_inner, context);
+                            // hash should exist, since the new entry is freshly created and added to the context;
+                            let new_connection = ConnectionT {
+                                entry_point: new_entry,
+                                return_map: ReturnMapT::new(new_return_map),
+                            };
+                            let mut hasher = std::hash::DefaultHasher::new();
+                            new_connection.hash(&mut hasher);
+                            let hash = hasher.finish();
+                            new_connection_hashes
+                                .iter()
+                                .position(|x| *x == hash)
+                                .unwrap_or_else(|| {
+                                    new_connection_hashes.push(hash);
+                                    new_connections.push(new_connection);
+                                    new_connection_hashes.len() - 1
+                                })
+                        })
+                        .collect();
+                    reduce_map_max = new_connection_hashes.len();
+                    layer_reduce_map = new_reduce_map;
+                    new_connection_list.push(new_connections);
+                }
+                new_connection_list.reverse();
+                context.borrow_mut().add_gcflobdd_node(Self {
+                    num_exits,
+                    hash_cache: RefCell::new(None),
+                    node: GcflobddNodeType::Internal(InternalNode {
+                        connections: new_connection_list,
+                        grammar: internal_node.grammar,
+                    }),
+                    grammar: self.grammar,
+                })
+            }
+            GcflobddNodeType::Bdd(bdd_node) => todo!(),
+        }
+    }
 }
 
 impl<'grammar> InternalNode<'grammar> {
@@ -355,11 +450,11 @@ impl<'grammar> InternalNode<'grammar> {
         if layer_idx == self.connections.len() - 1 {
             return connection
                 .return_map
-                .inverse_lookup(&(value as i32))
+                .inverse_lookup(&value)
                 .map(|inner_value| connection.entry_point.find_one_path_to(inner_value));
         }
         for inner_target in 0..connection.entry_point.get_num_exits() {
-            let next_connection_index = connection.return_map.lookup(inner_target) as usize;
+            let next_connection_index = connection.return_map.lookup(inner_target);
             if let Some(path) = self.find_one_path_to(value, layer_idx + 1, next_connection_index) {
                 let path_to_next_connection = connection.entry_point.find_one_path_to(inner_target);
                 return Some([path_to_next_connection, path].concat());

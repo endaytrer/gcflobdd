@@ -50,30 +50,25 @@ impl<T> ReturnMapT<T> {
         }
     }
 }
-pub(crate) type ReturnMap = ReturnMapT<i32>;
+pub(crate) type ReturnMap = ReturnMapT<usize>;
 
 impl ReturnMap {
-    pub fn new_sequential(n: i32) -> Self {
+    pub fn new_sequential(n: usize) -> Self {
         Self {
             map_array: (0..n).collect(),
             hash_cache: RefCell::new(None),
         }
     }
-    pub fn set(&mut self, index: usize, value: i32) {
+    pub fn set(&mut self, index: usize, value: usize) {
         self.map_array[index] = value;
         self.hash_cache.borrow_mut().take();
     }
-    pub fn add_to_end(&mut self, value: i32) {
-        self.map_array.push(value);
-        self.hash_cache.borrow_mut().take();
-    }
+}
+
+impl ReturnMapT<bool> {
     pub fn complement(&self) -> Self {
         Self {
-            map_array: self
-                .map_array
-                .iter()
-                .map(|x| if *x == 0 { 1 } else { 0 })
-                .collect(),
+            map_array: self.map_array.iter().map(|x| !x).collect(),
             hash_cache: RefCell::new(None),
         }
     }
