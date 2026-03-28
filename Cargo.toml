@@ -5,3 +5,12 @@ edition = "2024"
 
 [dependencies]
 lazy-regex = "3.6.0"
+parking_lot = { version = "0.12.5", optional = true }
+
+[features]
+default = []
+sync = ["dep:parking_lot"]
+
+[[test]]
+name = "n_queens"
+harness = false

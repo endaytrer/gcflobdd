@@ -1,75 +1,9 @@
-use std::{
-    cell::RefCell,
-    hash::{Hash, Hasher},
-};
+pub(super) type ReturnMapT<T> = Vec<T>;
+pub(super) type ReturnMap = ReturnMapT<usize>;
 
-#[derive(Clone)]
-pub(super) struct ReturnMapT<T> {
-    pub(super) map_array: Vec<T>,
-    hash_cache: RefCell<Option<u64>>,
+pub(super) fn inverse_lookup<T: Eq>(return_map: &ReturnMapT<T>, value: &T) -> Option<usize> {
+    return_map.iter().position(|x| *x == *value)
 }
-impl<T: std::fmt::Debug> std::fmt::Debug for ReturnMapT<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("ReturnMapT").field(&self.map_array).finish()
-    }
-}
-
-impl<T: Copy> ReturnMapT<T> {
-    pub fn lookup(&self, index: usize) -> T {
-        self.map_array[index]
-    }
-}
-impl<T: Eq> ReturnMapT<T> {
-    pub fn inverse_lookup(&self, value: &T) -> Option<usize> {
-        self.map_array.iter().position(|x| *x == *value)
-    }
-}
-
-impl<T: Hash> Hash for ReturnMapT<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        let hash_check = self.hash_cache.borrow();
-        if let Some(hash) = *hash_check {
-            hash.hash(state);
-            return;
-        }
-        std::mem::drop(hash_check);
-        let mut hash_check = self.hash_cache.borrow_mut();
-        let mut hasher = std::hash::DefaultHasher::new();
-        self.map_array.hash(&mut hasher);
-        let value = hasher.finish();
-        *hash_check = Some(value);
-        value.hash(state);
-    }
-}
-
-impl<T> ReturnMapT<T> {
-    pub fn new(map_array: Vec<T>) -> Self {
-        Self {
-            map_array,
-            hash_cache: RefCell::new(None),
-        }
-    }
-}
-pub(crate) type ReturnMap = ReturnMapT<usize>;
-
-impl ReturnMap {
-    pub fn new_sequential(n: usize) -> Self {
-        Self {
-            map_array: (0..n).collect(),
-            hash_cache: RefCell::new(None),
-        }
-    }
-    pub fn set(&mut self, index: usize, value: usize) {
-        self.map_array[index] = value;
-        self.hash_cache.borrow_mut().take();
-    }
-}
-
-impl ReturnMapT<bool> {
-    pub fn complement(&self) -> Self {
-        Self {
-            map_array: self.map_array.iter().map(|x| !x).collect(),
-            hash_cache: RefCell::new(None),
-        }
-    }
+pub(super) fn complement(return_map: &ReturnMapT<bool>) -> ReturnMapT<bool> {
+    return_map.iter().map(|x| !x).collect()
 }
