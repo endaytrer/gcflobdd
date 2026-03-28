@@ -205,43 +205,86 @@ impl<'grammar> GcflobddNode<'grammar> {
                         }
                     } else {
                         ConnectionT {
-                            entry_point: context
-                                .borrow_mut()
-                                .get_gcflobdd_node(rhs)
-                                .expect("Context error"),
+                            entry_point: rhs.clone(),
                             return_map: (0..rhs.num_exits).map(|i| (0, i)).collect(),
                         }
                     }
                 } else if rhs.num_exits == 1 {
                     ConnectionT {
-                        entry_point: context
-                            .borrow_mut()
-                            .get_gcflobdd_node(lhs)
-                            .expect("Context error"),
+                        entry_point: lhs.clone(),
                         return_map: (0..lhs.num_exits).map(|i| (i, 0)).collect(),
                     }
                 } else {
                     let mut connection_pair_list = vec![(0usize, 0usize)];
                     let mut product_connections = vec![];
-                    for i in 0..lhs_node.connections.len() {
+
+                    // Process layer 0 specifically to skip O(N) allocation and lookup overheads
+                    if !lhs_node.connections.is_empty() {
+                        let lhs_connection = &lhs_node.connections[0][0];
+                        let rhs_connection = &rhs_node.connections[0][0];
+                        let ConnectionT {
+                            entry_point,
+                            return_map: new_inner_pairs,
+                        } = Self::pair_product(
+                            &lhs_connection.entry_point,
+                            &rhs_connection.entry_point,
+                            context,
+                        );
+
+                        let mut new_connection_pair_list = vec![];
+                        let size_first = if 0 == lhs_node.connections.len() - 1 {
+                            lhs.num_exits
+                        } else {
+                            lhs_node.connections[1].len()
+                        };
+                        let size_second = if 0 == rhs_node.connections.len() - 1 {
+                            rhs.num_exits
+                        } else {
+                            rhs_node.connections[1].len()
+                        };
+
+                        let mut temp_vector = vec![usize::MAX; size_first * size_second];
+                        let mut new_outer_pairs = vec![];
+
+                        for (inner_j, inner_k) in new_inner_pairs {
+                            let outer_j = lhs_connection.return_map[inner_j];
+                            let outer_k = rhs_connection.return_map[inner_k];
+                            let index = outer_j * size_second + outer_k;
+
+                            if temp_vector[index] == usize::MAX {
+                                new_connection_pair_list.push((outer_j, outer_k));
+                                new_outer_pairs.push(new_connection_pair_list.len() - 1);
+                                temp_vector[index] = new_connection_pair_list.len() - 1;
+                            } else {
+                                new_outer_pairs.push(temp_vector[index]);
+                            }
+                        }
+
+                        let return_map = context.borrow_mut().add_return_map(new_outer_pairs);
+                        product_connections.push(vec![Connection {
+                            entry_point,
+                            return_map,
+                        }]);
+                        connection_pair_list = new_connection_pair_list;
+                    }
+
+                    for i in 1..lhs_node.connections.len() {
                         let lhs_connection_list = &lhs_node.connections[i];
                         let rhs_connection_list = &rhs_node.connections[i];
                         let mut new_connection_pair_list = vec![];
 
-                        fn merge_pair_list(
-                            pair_list: &mut Vec<(usize, usize)>,
-                            new_pair_list: impl IntoIterator<Item = (usize, usize)>,
-                        ) -> Vec<usize> {
-                            new_pair_list
-                                .into_iter()
-                                .map(|p| {
-                                    pair_list.iter().position(|x| *x == p).unwrap_or_else(|| {
-                                        pair_list.push(p);
-                                        pair_list.len() - 1
-                                    })
-                                })
-                                .collect()
-                        }
+                        let size_first = if i == lhs_node.connections.len() - 1 {
+                            lhs.num_exits
+                        } else {
+                            lhs_node.connections[i + 1].len()
+                        };
+                        let size_second = if i == rhs_node.connections.len() - 1 {
+                            rhs.num_exits
+                        } else {
+                            rhs_node.connections[i + 1].len()
+                        };
+                        let mut temp_vector = vec![usize::MAX; size_first * size_second];
+
                         let new_connections = connection_pair_list
                             .into_iter()
                             .map(|(j, k)| {
@@ -255,16 +298,24 @@ impl<'grammar> GcflobddNode<'grammar> {
                                     &rhs_connection.entry_point,
                                     context,
                                 );
-                                let new_outer_pairs =
-                                    new_inner_pairs.into_iter().map(|(inner_j, inner_k)| {
-                                        (
-                                            lhs_connection.return_map[inner_j],
-                                            rhs_connection.return_map[inner_k],
-                                        )
-                                    });
-                                let return_map = context.borrow_mut().add_return_map(
-                                    merge_pair_list(&mut new_connection_pair_list, new_outer_pairs),
-                                );
+
+                                let mut new_outer_pairs = vec![];
+                                for (inner_j, inner_k) in new_inner_pairs {
+                                    let outer_j = lhs_connection.return_map[inner_j];
+                                    let outer_k = rhs_connection.return_map[inner_k];
+                                    let index = outer_j * size_second + outer_k;
+
+                                    if temp_vector[index] == usize::MAX {
+                                        new_connection_pair_list.push((outer_j, outer_k));
+                                        new_outer_pairs.push(new_connection_pair_list.len() - 1);
+                                        temp_vector[index] = new_connection_pair_list.len() - 1;
+                                    } else {
+                                        new_outer_pairs.push(temp_vector[index]);
+                                    }
+                                }
+
+                                let return_map =
+                                    context.borrow_mut().add_return_map(new_outer_pairs);
                                 Connection {
                                     entry_point,
                                     return_map,
@@ -289,27 +340,19 @@ impl<'grammar> GcflobddNode<'grammar> {
             }
             (GcflobddNodeType::Bdd(_), GcflobddNodeType::Bdd(_)) => todo!(),
             (GcflobddNodeType::DontCare, GcflobddNodeType::DontCare) => ConnectionT {
-                entry_point: context
-                    .borrow_mut()
-                    .add_gcflobdd_node(Self::dont_care(lhs.grammar)),
+                entry_point: lhs.clone(),
                 return_map: vec![(0, 0)],
             },
             (GcflobddNodeType::Fork, GcflobddNodeType::DontCare) => ConnectionT {
-                entry_point: context
-                    .borrow_mut()
-                    .add_gcflobdd_node(Self::fork(lhs.grammar)),
+                entry_point: lhs.clone(),
                 return_map: vec![(0, 0), (1, 0)],
             },
             (GcflobddNodeType::DontCare, GcflobddNodeType::Fork) => ConnectionT {
-                entry_point: context
-                    .borrow_mut()
-                    .add_gcflobdd_node(Self::fork(lhs.grammar)),
+                entry_point: rhs.clone(),
                 return_map: vec![(0, 0), (0, 1)],
             },
             (GcflobddNodeType::Fork, GcflobddNodeType::Fork) => ConnectionT {
-                entry_point: context
-                    .borrow_mut()
-                    .add_gcflobdd_node(Self::fork(lhs.grammar)),
+                entry_point: lhs.clone(),
                 return_map: vec![(0, 0), (1, 1)],
             },
             _ => unreachable!("Invalid configuration for grammar"),
