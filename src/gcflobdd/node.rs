@@ -10,6 +10,7 @@ use crate::{
 };
 use std::{
     cell::RefCell,
+    collections::HashMap,
     hash::{Hash, Hasher},
     rc::Rc,
 };
@@ -365,8 +366,17 @@ impl<'grammar> GcflobddNode<'grammar> {
     pub fn reduce(
         this: &Rch<Self>,
         reduce_map: Vec<usize>,
+        num_exits: usize,
         context: &RefCell<Context<'grammar>>,
     ) -> Rch<Self> {
+        if num_exits == 1 {
+            return Self::mk_no_distinction(this.grammar, context);
+        }
+        // is identity map. This is guaranteed by the generation process.
+        if num_exits == reduce_map.len() {
+            return this.clone();
+        }
+
         if let Some(t) = context.borrow_mut().get_reduction_cache(this, &reduce_map) {
             return t;
         }
@@ -387,29 +397,42 @@ impl<'grammar> GcflobddNode<'grammar> {
                 }
             }
             GcflobddNodeType::Internal(internal_node) => {
-                if reduce_map.iter().all(|x| *x == 0) {
-                    // all reduce to 0, return don't care
-                    context.borrow_mut().add_gcflobdd_node(Self {
-                        num_exits: 1,
-                        grammar: this.grammar,
-                        node: GcflobddNodeType::Internal(InternalNode {
-                            connections: vec![],
-                            grammar: internal_node.grammar,
-                        }),
-                    })
-                } else {
-                    // If this is a don't care, the reduce_map should be &[0].
-                    let num_exits = reduce_map.iter().max().unwrap() + 1;
-                    let mut reduce_map_max = num_exits;
-                    let mut layer_reduce_map = reduce_map;
-                    let mut new_connection_list =
-                        Vec::with_capacity(internal_node.connections.len());
-                    for connection_list in internal_node.connections.iter().rev() {
-                        let mut new_connection_hashes = vec![];
-                        let mut new_connections = vec![];
-                        let new_reduce_map = connection_list
-                            .iter()
-                            .map(|connection| {
+                // If this is a don't care, the reduce_map should be &[0].
+                // The early return `if num_exits == 1` handles the `reduce_map.iter().all(|x| *x == 0)` case.
+                let mut reduce_map_max = num_exits;
+                let mut layer_reduce_map = reduce_map.clone();
+                let mut new_connection_list =
+                    Vec::with_capacity(internal_node.connections.len());
+                for connection_list in internal_node.connections.iter().rev() {
+                    let mut new_connection_hashes = HashMap::new();
+                    let mut new_connections = vec![];
+
+                    let is_identity_layer = layer_reduce_map.iter().enumerate().all(|(i, &x)| i == x);
+
+                    let new_reduce_map = connection_list
+                        .iter()
+                        .map(|connection| {
+                            if is_identity_layer {
+                                let new_entry = GcflobddNode::reduce(
+                                    &connection.entry_point,
+                                    connection.return_map.iter().enumerate().map(|(i, _)| i).collect(),
+                                    connection.return_map.len(),
+                                    context,
+                                );
+                                
+                                let new_connection = ConnectionT {
+                                    entry_point: new_entry,
+                                    return_map: context.borrow_mut().add_return_map(connection.return_map.iter().copied().collect()),
+                                };
+                                let mut hasher = std::hash::DefaultHasher::new();
+                                new_connection.hash(&mut hasher);
+                                let hash = hasher.finish();
+                                
+                                *new_connection_hashes.entry(hash).or_insert_with(|| {
+                                    new_connections.push(new_connection);
+                                    new_connections.len() - 1
+                                })
+                            } else {
                                 // first appearance of a value.
                                 let mut inverse_lookup = vec![None; reduce_map_max];
                                 let mut num_outs = 0;
@@ -434,6 +457,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                                 let new_entry = GcflobddNode::reduce(
                                     &connection.entry_point,
                                     reduce_map_inner,
+                                    new_return_map.len(),
                                     context,
                                 );
                                 // hash should exist, since the new entry is freshly created and added to the context;
@@ -444,30 +468,27 @@ impl<'grammar> GcflobddNode<'grammar> {
                                 let mut hasher = std::hash::DefaultHasher::new();
                                 new_connection.hash(&mut hasher);
                                 let hash = hasher.finish();
-                                new_connection_hashes
-                                    .iter()
-                                    .position(|x| *x == hash)
-                                    .unwrap_or_else(|| {
-                                        new_connection_hashes.push(hash);
-                                        new_connections.push(new_connection);
-                                        new_connection_hashes.len() - 1
-                                    })
-                            })
-                            .collect();
-                        reduce_map_max = new_connection_hashes.len();
-                        layer_reduce_map = new_reduce_map;
-                        new_connection_list.push(new_connections);
-                    }
-                    new_connection_list.reverse();
-                    context.borrow_mut().add_gcflobdd_node(Self {
-                        num_exits,
-                        node: GcflobddNodeType::Internal(InternalNode {
-                            connections: new_connection_list,
-                            grammar: internal_node.grammar,
-                        }),
-                        grammar: this.grammar,
-                    })
+                                
+                                *new_connection_hashes.entry(hash).or_insert_with(|| {
+                                    new_connections.push(new_connection);
+                                    new_connections.len() - 1
+                                })
+                            }
+                        })
+                        .collect();
+                    reduce_map_max = new_connection_hashes.len();
+                    layer_reduce_map = new_reduce_map;
+                    new_connection_list.push(new_connections);
                 }
+                new_connection_list.reverse();
+                context.borrow_mut().add_gcflobdd_node(Self {
+                    num_exits,
+                    node: GcflobddNodeType::Internal(InternalNode {
+                        connections: new_connection_list,
+                        grammar: internal_node.grammar,
+                    }),
+                    grammar: this.grammar,
+                })
             }
             GcflobddNodeType::Bdd(_bdd_node) => todo!(),
         };

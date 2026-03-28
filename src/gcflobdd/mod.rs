@@ -166,8 +166,9 @@ impl<'grammar, T> GcflobddT<'grammar, T> {
                     })
             })
             .collect::<Vec<_>>();
+        let num_exits = new_return_handle.len();
         let entry_point =
-            GcflobddNode::reduce(&self.connection.entry_point, mapping_array, context);
+            GcflobddNode::reduce(&self.connection.entry_point, mapping_array, num_exits, context);
 
         GcflobddT {
             connection: ConnectionT {
