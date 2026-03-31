@@ -9,7 +9,10 @@ use std::cell::RefCell;
 use std::ops::Not;
 use std::rc::Rc;
 
-use crate::gcflobdd::context::Context;
+use crate::gcflobdd::connection::ConnectionPair;
+use crate::gcflobdd::context::{
+    Context, OP_AND, OP_IMPLIES, OP_NAND, OP_NOR, OP_OR, OP_XNOR, OP_XOR,
+};
 use crate::gcflobdd::node::GcflobddNode;
 use crate::gcflobdd::return_map::{complement, inverse_lookup};
 use crate::grammar::Grammar;
@@ -29,6 +32,23 @@ impl<'grammar, T: std::fmt::Debug> std::fmt::Debug for GcflobddT<'grammar, T> {
 
 pub type Gcflobdd<'grammar> = GcflobddT<'grammar, bool>;
 
+macro_rules! define_op {
+    ($name:ident, $op_code:ident, $op:expr) => {
+        pub fn $name(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
+            if let Some(ans) = context
+                .borrow()
+                .get_op_cache::<$op_code>(self.clone(), rhs.clone())
+            {
+                return ans;
+            }
+            let ans = self.mk_op(rhs, $op, context);
+            context
+                .borrow_mut()
+                .set_op_cache::<$op_code>(self.clone(), rhs.clone(), ans.clone());
+            ans
+        }
+    };
+}
 impl<'grammar> Gcflobdd<'grammar> {
     fn new(
         connection: ConnectionT<'grammar, ReturnMapT<bool>>,
@@ -82,27 +102,20 @@ impl<'grammar> Gcflobdd<'grammar> {
             grammar: self.grammar,
         }
     }
-    pub fn mk_and(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
-        self.mk_op(rhs, |a, b| *a && *b, context)
-    }
-    pub fn mk_or(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
-        self.mk_op(rhs, |a, b| *a || *b, context)
-    }
-    pub fn mk_xor(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
-        self.mk_op(rhs, |a, b| *a ^ *b, context)
-    }
-    pub fn mk_nand(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
-        self.mk_op(rhs, |a, b| !(*a && *b), context)
-    }
-    pub fn mk_nor(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
-        self.mk_op(rhs, |a, b| !(*a || *b), context)
-    }
-    pub fn mk_xnor(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
-        self.mk_op(rhs, |a, b| !(*a ^ *b), context)
-    }
-    pub fn mk_implies(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
-        self.mk_op(rhs, |a, b| !(*a) || *b, context)
-    }
+
+    define_op!(mk_and, OP_AND, |a: &bool, b: &bool| -> bool { *a && *b });
+    define_op!(mk_or, OP_OR, |a: &bool, b: &bool| -> bool { *a || *b });
+    define_op!(mk_xor, OP_XOR, |a: &bool, b: &bool| -> bool { *a ^ *b });
+    define_op!(mk_nand, OP_NAND, |a: &bool, b: &bool| -> bool {
+        !(*a && *b)
+    });
+    define_op!(mk_nor, OP_NOR, |a: &bool, b: &bool| -> bool { !(*a || *b) });
+    define_op!(mk_xnor, OP_XNOR, |a: &bool, b: &bool| -> bool {
+        !(*a ^ *b)
+    });
+    define_op!(mk_implies, OP_IMPLIES, |a: &bool, b: &bool| -> bool {
+        !(*a) || *b
+    });
 
     pub fn find_one_satisfiable_assignment(&self) -> Option<Vec<Option<bool>>> {
         self.find_one_path_to(&true)
@@ -121,7 +134,7 @@ impl<'grammar, T: Copy> GcflobddT<'grammar, T> {
         rhs: &Self,
         context: &RefCell<Context<'grammar>>,
     ) -> GcflobddT<'grammar, (T, T)> {
-        let ConnectionT {
+        let ConnectionPair {
             entry_point,
             return_map,
         } = GcflobddNode::pair_product(
@@ -167,8 +180,12 @@ impl<'grammar, T> GcflobddT<'grammar, T> {
             })
             .collect::<Vec<_>>();
         let num_exits = new_return_handle.len();
-        let entry_point =
-            GcflobddNode::reduce(&self.connection.entry_point, mapping_array, num_exits, context);
+        let entry_point = GcflobddNode::reduce(
+            &self.connection.entry_point,
+            mapping_array,
+            num_exits,
+            context,
+        );
 
         GcflobddT {
             connection: ConnectionT {
@@ -186,19 +203,8 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
         op: impl Fn(&T, &T) -> T,
         context: &RefCell<Context<'grammar>>,
     ) -> Self {
-        let start_pair = std::time::Instant::now();
-        let pair_product = self.pair_product(rhs, context);
-        let pair_time = start_pair.elapsed();
-
-        let start_map = std::time::Instant::now();
-        let mapped = pair_product.map(|(a, b)| op(a, b), context);
-        let map_time = start_map.elapsed();
-
-        println!(
-            "pair_product took: {:?}, map took: {:?}",
-            pair_time, map_time
-        );
-        mapped
+        self.pair_product(rhs, context)
+            .map(|(a, b)| op(a, b), context)
     }
 }
 
@@ -210,9 +216,16 @@ impl Not for Gcflobdd<'_> {
     }
 }
 
-impl PartialEq for Gcflobdd<'_> {
+impl<T: PartialEq> PartialEq for GcflobddT<'_, T> {
     fn eq(&self, other: &Self) -> bool {
         Rc::as_ptr(&self.connection.entry_point) == Rc::as_ptr(&other.connection.entry_point)
             && self.connection.return_map == other.connection.return_map
+    }
+}
+impl<T: Eq> Eq for GcflobddT<'_, T> {}
+
+impl<T: std::hash::Hash> std::hash::Hash for GcflobddT<'_, T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.connection.hash(state);
     }
 }

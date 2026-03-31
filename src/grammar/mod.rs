@@ -136,11 +136,11 @@ pub(crate) struct GrammarNode {
 }
 
 pub(crate) type InternalGrammarNodeType = Vec<Rc<GrammarNode>>;
-pub(crate) type BddNodeType = usize;
+pub(crate) type BddGrammarNodeType = usize;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum GrammarNodeType {
     Internal(InternalGrammarNodeType),
-    Bdd(BddNodeType),
+    Bdd(BddGrammarNodeType),
     Terminal,
 }
 

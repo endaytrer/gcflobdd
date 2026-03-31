@@ -17,7 +17,12 @@ fn gen_balanced_grammar(level: usize) -> Vec<String> {
 
 fn main() {
     let mut n = 8;
-    let mut use_balanced = false;
+    enum GrammarChoice {
+        Default,
+        Balanced,
+        Ndd,
+    }
+    let mut grammar_choice = GrammarChoice::Default;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -32,8 +37,9 @@ fn main() {
             "--grammar" => {
                 if i + 1 < args.len() {
                     match args[i + 1].as_str() {
-                        "balanced" => use_balanced = true,
-                        "default" => use_balanced = false,
+                        "balanced" => grammar_choice = GrammarChoice::Balanced,
+                        "default" => grammar_choice = GrammarChoice::Default,
+                        "ndd" => grammar_choice = GrammarChoice::Ndd,
                         _ => panic!("Unknown grammar choice: {}", args[i + 1]),
                     }
                     i += 1;
@@ -53,20 +59,33 @@ fn main() {
     println!(
         "Running nqueens with n={}, grammar={}",
         n,
-        if use_balanced { "balanced" } else { "default" }
+        match grammar_choice {
+            GrammarChoice::Balanced => "balanced",
+            GrammarChoice::Default => "default",
+            GrammarChoice::Ndd => "ndd",
+        }
     );
 
-    let grammar = if use_balanced {
-        let l = (2.0 * (n as f64).log2()).ceil() as usize;
-        let rules = gen_balanced_grammar(l);
-        Grammar::new(&rules).unwrap()
-    } else {
-        let s2 = vec!["S1"; n].join(" ");
-        let s2_gen_rule = format!("S2 -> {}", s2);
+    let start_time = std::time::Instant::now();
+    let grammar = match grammar_choice {
+        GrammarChoice::Balanced => {
+            let l = (2.0 * (n as f64).log2()).ceil() as usize;
+            let rules = gen_balanced_grammar(l);
+            Grammar::new(&rules).unwrap()
+        }
+        GrammarChoice::Default => {
+            let s2 = vec!["S1"; n].join(" ");
+            let s2_gen_rule = format!("S2 -> {}", s2);
 
-        let s1 = vec!["a"; n].join(" ");
-        let s1_gen_rule = format!("S1 -> {}", s1);
-        Grammar::new(&[s2_gen_rule, s1_gen_rule]).unwrap()
+            let s1 = vec!["a"; n].join(" ");
+            let s1_gen_rule = format!("S1 -> {}", s1);
+            Grammar::new(&[s2_gen_rule, s1_gen_rule]).unwrap()
+        }
+        GrammarChoice::Ndd => {
+            let s1 = vec![format!("BDD({})", n); n].join(" ");
+            let s1_gen_rule = format!("S1 -> {}", s1);
+            Grammar::new(&[s1_gen_rule]).unwrap()
+        }
     };
 
     let context = RefCell::new(Context::default());
@@ -166,6 +185,12 @@ fn main() {
     }
 
     let path = queen.find_one_satisfiable_assignment().unwrap();
+    let end_time = std::time::Instant::now();
+    println!(
+        "Solved in {} ms",
+        end_time.duration_since(start_time).as_millis()
+    );
+    println!("Path:");
     for i in 0..n {
         for j in 0..n {
             print!(
