@@ -24,7 +24,7 @@ impl Bdd {
     pub fn pair_product(&self, rhs: &Self, context: &RefCell<Context<'_>>) -> BddConnectionPair {
         BddNode::pair_product(&self.0, &rhs.0, context)
     }
-    pub fn reduce(&self, reduce_map: &[usize], context: &RefCell<Context<'_>>) -> Self {
-        Self(BddNode::reduce(&self.0, reduce_map, context))
+    pub fn reduce(&self, reduce_map: &[usize], num_exits: usize, context: &RefCell<Context<'_>>) -> Self {
+        Self(BddNode::reduce(&self.0, reduce_map, num_exits, context))
     }
 }

@@ -72,16 +72,53 @@ impl BddNode {
             return t;
         }
 
+        let mut leaf_map = std::collections::HashMap::new();
+        let mut return_map = vec![];
+        let mut pair_cache = std::collections::HashMap::new();
+        let entry_point = Self::pair_product_internal(
+            lhs,
+            rhs,
+            context,
+            &mut leaf_map,
+            &mut return_map,
+            &mut pair_cache,
+        );
+        let ans = BddConnectionPair {
+            entry_point,
+            return_map,
+        };
+
+        context
+            .borrow_mut()
+            .set_bdd_pair_product_cache(lhs, rhs, ans.clone());
+        ans
+    }
+
+    fn pair_product_internal(
+        lhs: &Rch<Self>,
+        rhs: &Rch<Self>,
+        context: &RefCell<Context<'_>>,
+        leaf_map: &mut std::collections::HashMap<(usize, usize), usize>,
+        return_map: &mut Vec<(usize, usize)>,
+        pair_cache: &mut std::collections::HashMap<(u64, u64), Rch<Self>>,
+    ) -> Rch<Self> {
+        let hash1 = lhs.hash_code();
+        let hash2 = rhs.hash_code();
+        if let Some(cached) = pair_cache.get(&(hash1, hash2)) {
+            return cached.clone();
+        }
+
         if let (BddNode::Terminal(lhs_t), BddNode::Terminal(rhs_t)) =
             (lhs.as_ref().as_ref(), rhs.as_ref().as_ref())
         {
-            let ans = BddConnectionPair {
-                entry_point: context.borrow_mut().add_bdd_node(Self::Terminal(0)),
-                return_map: vec![(*lhs_t, *rhs_t)],
-            };
-            context
-                .borrow_mut()
-                .set_bdd_pair_product_cache(lhs, rhs, ans.clone());
+            let pair = (*lhs_t, *rhs_t);
+            let idx = *leaf_map.entry(pair).or_insert_with(|| {
+                let new_idx = return_map.len();
+                return_map.push(pair);
+                new_idx
+            });
+            let ans = context.borrow_mut().add_bdd_node(Self::Terminal(idx));
+            pair_cache.insert((hash1, hash2), ans.clone());
             return ans;
         }
 
@@ -111,72 +148,52 @@ impl BddNode {
                 _ => unreachable!(),
             };
 
-        let zero_branch = Self::pair_product(zero_l, zero_r, context);
-        let one_branch = Self::pair_product(one_l, one_r, context);
+        let zero_branch =
+            Self::pair_product_internal(zero_l, zero_r, context, leaf_map, return_map, pair_cache);
+        let one_branch =
+            Self::pair_product_internal(one_l, one_r, context, leaf_map, return_map, pair_cache);
 
-        let mut return_map = zero_branch.return_map.clone();
-        use std::collections::HashMap;
-        let mut inverse_lookup: HashMap<(usize, usize), usize> = HashMap::new();
-        for (i, p) in return_map.iter().enumerate() {
-            inverse_lookup.insert(*p, i);
-        }
-
-        let mut one_reduce_map = Vec::with_capacity(one_branch.return_map.len());
-        for p in &one_branch.return_map {
-            if let Some(&idx) = inverse_lookup.get(p) {
-                one_reduce_map.push(idx);
-            } else {
-                let idx = return_map.len();
-                inverse_lookup.insert(*p, idx);
-                return_map.push(*p);
-                one_reduce_map.push(idx);
-            }
-        }
-
-        let zero_entry = zero_branch.entry_point;
-        let one_entry = Self::reduce(&one_branch.entry_point, &one_reduce_map, context);
-
-        let ans_entry = if zero_entry.hash_code() == one_entry.hash_code() {
-            zero_entry
+        let ans = if zero_branch.hash_code() == one_branch.hash_code() {
+            zero_branch
         } else {
             context
                 .borrow_mut()
                 .add_bdd_node(Self::Internal(BddInternalNode {
                     var_id,
-                    zero_branch: zero_entry,
-                    one_branch: one_entry,
+                    zero_branch,
+                    one_branch,
                 }))
         };
-
-        let ans = BddConnectionPair {
-            entry_point: ans_entry,
-            return_map,
-        };
-        context
-            .borrow_mut()
-            .set_bdd_pair_product_cache(lhs, rhs, ans.clone());
+        pair_cache.insert((hash1, hash2), ans.clone());
         ans
     }
 
     pub fn reduce(
         this: &Rch<Self>,
         reduce_map: &[usize],
+        num_exits: usize,
         context: &RefCell<Context<'_>>,
     ) -> Rch<Self> {
+        if num_exits == reduce_map.len() {
+            return this.clone();
+        }
+
         if let Some(t) = context.borrow().get_bdd_reduction_cache(this, reduce_map) {
             return t;
         }
         let ans = match this.as_ref().as_ref() {
-            Self::Terminal(i) => context
-                .borrow_mut()
-                .add_bdd_node(BddNode::Terminal(reduce_map[*i])),
+            Self::Terminal(i) => {
+                context
+                    .borrow_mut()
+                    .add_bdd_node(BddNode::Terminal(reduce_map[*i]))
+            },
             Self::Internal(BddInternalNode {
                 var_id,
                 zero_branch,
                 one_branch,
             }) => {
-                let zero_branch = Self::reduce(zero_branch, reduce_map, context);
-                let one_branch = Self::reduce(one_branch, reduce_map, context);
+                let zero_branch = Self::reduce(zero_branch, reduce_map, num_exits, context);
+                let one_branch = Self::reduce(one_branch, reduce_map, num_exits, context);
                 if zero_branch.hash_code() == one_branch.hash_code() {
                     return zero_branch;
                 }

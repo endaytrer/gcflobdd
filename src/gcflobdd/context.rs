@@ -92,7 +92,7 @@ impl<'grammar> Context<'grammar> {
         }
         None
     }
-    pub(super) fn get_bdd_pair_product_cache(
+    pub(crate) fn get_bdd_pair_product_cache(
         &self,
         n1: &Rch<BddNode>,
         n2: &Rch<BddNode>,

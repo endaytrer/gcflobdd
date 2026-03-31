@@ -380,7 +380,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                 })
             }
             GcflobddNodeType::Bdd(bdd_node) => {
-                let node = GcflobddNodeType::Bdd(bdd_node.reduce(&reduce_map, context));
+                let node = GcflobddNodeType::Bdd(bdd_node.reduce(&reduce_map, num_exits, context));
                 context.borrow_mut().add_gcflobdd_node(Self {
                     num_exits,
                     grammar: this.grammar,
