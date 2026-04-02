@@ -13,6 +13,7 @@ macro_rules! grammar_choice {
             Grammar::new(&["S2 -> BDD(4)".to_string()]).unwrap(),
             Grammar::new(&["S2 -> BDD(2) BDD(2)".to_string()]).unwrap(),
             Grammar::new(&["S2 -> S1 S1".to_string(), "S1 -> BDD(2)".to_string()]).unwrap(),
+            Grammar::new_bdd(4),
         ]
     };
 }
@@ -67,6 +68,30 @@ fn test_pair_product() {
         context.borrow_mut().gc();
         let path = c3.find_one_path_to(&(true, true)).unwrap();
         assert_eq!(path, vec![Some(true), Some(true), None, None]);
+    }
+}
+
+#[test]
+fn test_mk_op_pair_map() {
+    for grammar in grammar_choice!() {
+        let context = RefCell::new(Context::default());
+        let c1 = Gcflobdd::mk_projection(0, &grammar, &context);
+        let c2 = Gcflobdd::mk_projection(1, &grammar, &context);
+
+        let c3_standard = c1.mk_op(&c2, |a, b| a & b, &context);
+        let c3_pair_map = c1.mk_op_pair_map(&c2, |a, b| a & b, &context);
+
+        assert_eq!(c3_standard, c3_pair_map);
+
+        let c_or_standard = c1.mk_op(&c2, |a, b| a | b, &context);
+        let c_or_pair_map = c1.mk_op_pair_map(&c2, |a, b| a | b, &context);
+
+        assert_eq!(c_or_standard, c_or_pair_map);
+
+        let c_xor_standard = c1.mk_op(&c2, |a, b| a ^ b, &context);
+        let c_xor_pair_map = c1.mk_op_pair_map(&c2, |a, b| a ^ b, &context);
+
+        assert_eq!(c_xor_standard, c_xor_pair_map);
     }
 }
 

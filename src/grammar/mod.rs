@@ -95,6 +95,14 @@ impl Grammar {
             root: Self::parse_production(first_rule, &mut symbol_map, &mut terminal_node)?,
         })
     }
+    pub fn new_bdd(size: usize) -> Self {
+        Self {
+            root: Rc::new(GrammarNode {
+                num_vars: size,
+                node: GrammarNodeType::Bdd(size),
+            }),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -21,6 +21,7 @@ fn main() {
         Default,
         Balanced,
         Ndd,
+        Bdd,
     }
     let mut grammar_choice = GrammarChoice::Default;
 
@@ -40,6 +41,7 @@ fn main() {
                         "balanced" => grammar_choice = GrammarChoice::Balanced,
                         "default" => grammar_choice = GrammarChoice::Default,
                         "ndd" => grammar_choice = GrammarChoice::Ndd,
+                        "bdd" => grammar_choice = GrammarChoice::Bdd,
                         _ => panic!("Unknown grammar choice: {}", args[i + 1]),
                     }
                     i += 1;
@@ -63,6 +65,7 @@ fn main() {
             GrammarChoice::Balanced => "balanced",
             GrammarChoice::Default => "default",
             GrammarChoice::Ndd => "ndd",
+            GrammarChoice::Bdd => "bdd",
         }
     );
 
@@ -86,6 +89,7 @@ fn main() {
             let s1_gen_rule = format!("S1 -> {}", s1);
             Grammar::new(&[s1_gen_rule]).unwrap()
         }
+        GrammarChoice::Bdd => Grammar::new_bdd(n * n),
     };
 
     let context = RefCell::new(Context::default());

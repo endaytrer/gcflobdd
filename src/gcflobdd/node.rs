@@ -264,6 +264,230 @@ impl<'grammar> GcflobddNode<'grammar> {
             .set_pair_product_cache(lhs, rhs, ans.clone());
         ans
     }
+
+    pub fn pair_map(
+        lhs: &Rch<Self>,
+        rhs: &Rch<Self>,
+        reduce_map: Vec<usize>,
+        num_exits: usize,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Connection<'grammar> {
+        match (&lhs.node, &rhs.node) {
+            (GcflobddNodeType::DontCare, GcflobddNodeType::DontCare) => Connection {
+                entry_point: Self::mk_no_distinction(lhs.grammar, context),
+                return_map: context.borrow_mut().add_return_map(reduce_map),
+            },
+            (GcflobddNodeType::DontCare, _) => Connection::new_sequential(
+                GcflobddNode::reduce(rhs, reduce_map, num_exits, context),
+                context,
+            ),
+            (_, GcflobddNodeType::DontCare) => Connection::new_sequential(
+                GcflobddNode::reduce(lhs, reduce_map, num_exits, context),
+                context,
+            ),
+            (GcflobddNodeType::Internal(lhs_node), GcflobddNodeType::Internal(rhs_node)) => {
+                let mut connection_pair_list = vec![(0usize, 0usize)];
+                let mut product_connections = vec![];
+                for i in 0..lhs_node.connections.len() - 1 {
+                    let lhs_connection_list = &lhs_node.connections[i];
+                    let rhs_connection_list = &rhs_node.connections[i];
+                    let mut new_connection_pair_list = vec![];
+
+                    let size_first = lhs_node.connections[i + 1].len();
+                    let size_second = rhs_node.connections[i + 1].len();
+                    let mut exit_lookup = vec![usize::MAX; size_first * size_second];
+
+                    let new_connections = connection_pair_list
+                        .into_iter()
+                        .map(|(j, k)| {
+                            let lhs_connection = &lhs_connection_list[j];
+                            let rhs_connection = &rhs_connection_list[k];
+                            let ConnectionPair {
+                                entry_point,
+                                return_map: new_inner_pairs,
+                            } = Self::pair_product(
+                                &lhs_connection.entry_point,
+                                &rhs_connection.entry_point,
+                                context,
+                            );
+                            let mut new_outer_pairs = vec![];
+                            for (inner_j, inner_k) in new_inner_pairs {
+                                let outer_j = lhs_connection.return_map[inner_j];
+                                let outer_k = rhs_connection.return_map[inner_k];
+                                let index = outer_j * size_second + outer_k;
+
+                                if exit_lookup[index] == usize::MAX {
+                                    new_connection_pair_list.push((outer_j, outer_k));
+                                    new_outer_pairs.push(new_connection_pair_list.len() - 1);
+                                    exit_lookup[index] = new_connection_pair_list.len() - 1;
+                                } else {
+                                    new_outer_pairs.push(exit_lookup[index]);
+                                }
+                            }
+                            Connection {
+                                entry_point,
+                                return_map: context.borrow_mut().add_return_map(new_outer_pairs),
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    product_connections.push(new_connections);
+                    connection_pair_list = new_connection_pair_list;
+                }
+                let lhs_connection_list = &lhs_node.connections[lhs_node.connections.len() - 1];
+                let rhs_connection_list = &rhs_node.connections[rhs_node.connections.len() - 1];
+
+                let mut new_connection_hashes = HashMap::new();
+                let mut new_connections = vec![];
+
+                // 2. recursively call pair_map for connection layer n - 1
+                let mut layer_reduce_map: Vec<usize> = connection_pair_list
+                    .into_iter()
+                    .map(|(j, k)| {
+                        let lhs_connection = &lhs_connection_list[j];
+                        let rhs_connection = &rhs_connection_list[k];
+
+                        let inner_reduce_map = lhs_connection
+                            .return_map
+                            .iter()
+                            .flat_map(|rt_j| {
+                                rhs_connection
+                                    .return_map
+                                    .iter()
+                                    .map(|rt_k| reduce_map[*rt_k * lhs.num_exits + *rt_j])
+                            })
+                            .collect();
+
+                        let new_connection = Self::pair_map(
+                            &lhs_connection.entry_point,
+                            &rhs_connection.entry_point,
+                            inner_reduce_map,
+                            num_exits,
+                            context,
+                        );
+
+                        let mut hasher = std::hash::DefaultHasher::new();
+                        new_connection.hash(&mut hasher);
+                        let hash = hasher.finish();
+
+                        *new_connection_hashes.entry(hash).or_insert_with(|| {
+                            new_connections.push(new_connection);
+                            new_connections.len() - 1
+                        })
+                    })
+                    .collect();
+
+                let mut reduce_map_max = new_connection_hashes.len();
+
+                let mut new_connection_list: Vec<MaybeUninit<Vec<Connection<'grammar>>>> =
+                    Vec::with_capacity(lhs_node.connections.len());
+                unsafe {
+                    new_connection_list.set_len(lhs_node.connections.len());
+                }
+                new_connection_list[lhs_node.connections.len() - 1].write(new_connections);
+
+                // 3. call reduce for connection 0..n-1 (backwards)
+                for (idx, connection_list) in product_connections.iter().enumerate().rev() {
+                    if reduce_map_max == layer_reduce_map.len() {
+                        for (i, new_connection) in
+                            new_connection_list.iter_mut().enumerate().take(idx + 1)
+                        {
+                            new_connection.write(product_connections[i].clone());
+                        }
+                        break;
+                    }
+                    let mut new_connection_hashes = HashMap::new();
+                    let mut new_connections = vec![];
+
+                    let new_reduce_map = connection_list
+                        .iter()
+                        .map(|connection| {
+                            let mut inverse_lookup = vec![None; reduce_map_max];
+                            let mut num_outs = 0;
+                            let mut new_return_map = vec![];
+                            let reduce_map_outer = connection
+                                .return_map
+                                .iter()
+                                .map(|x| {
+                                    let ans = layer_reduce_map[*x];
+                                    inverse_lookup[ans].get_or_insert_with(|| {
+                                        num_outs += 1;
+                                        new_return_map.push(ans);
+                                        num_outs - 1
+                                    });
+                                    ans
+                                })
+                                .collect::<Vec<_>>();
+                            let reduce_map_inner = reduce_map_outer
+                                .iter()
+                                .map(|x| inverse_lookup[*x].unwrap())
+                                .collect::<Vec<_>>();
+                            let new_entry = GcflobddNode::reduce(
+                                &connection.entry_point,
+                                reduce_map_inner,
+                                new_return_map.len(),
+                                context,
+                            );
+                            let new_connection = ConnectionT {
+                                entry_point: new_entry,
+                                return_map: context.borrow_mut().add_return_map(new_return_map),
+                            };
+                            let mut hasher = std::hash::DefaultHasher::new();
+                            new_connection.hash(&mut hasher);
+                            let hash = hasher.finish();
+
+                            *new_connection_hashes.entry(hash).or_insert_with(|| {
+                                new_connections.push(new_connection);
+                                new_connections.len() - 1
+                            })
+                        })
+                        .collect();
+                    reduce_map_max = new_connection_hashes.len();
+                    layer_reduce_map = new_reduce_map;
+                    new_connection_list[idx].write(
+                        new_connections
+                            .into_iter()
+                            .map(|c| Connection {
+                                entry_point: c.entry_point,
+                                return_map: c.return_map,
+                            })
+                            .collect(),
+                    );
+                }
+
+                let new_connection_list = unsafe {
+                    std::mem::transmute::<Vec<MaybeUninit<Vec<_>>>, Vec<Vec<_>>>(
+                        new_connection_list,
+                    )
+                };
+
+                let entry_point = context.borrow_mut().add_gcflobdd_node(Self {
+                    num_exits,
+                    grammar: lhs.grammar,
+                    node: GcflobddNodeType::Internal(InternalNode {
+                        connections: new_connection_list,
+                    }),
+                });
+                let return_map = context.borrow_mut().add_return_map(layer_reduce_map);
+
+                Connection {
+                    entry_point,
+                    return_map,
+                }
+            }
+            (GcflobddNodeType::Bdd(lhs_bdd), GcflobddNodeType::Bdd(rhs_bdd)) => {
+                let product = lhs_bdd.pair_map(rhs_bdd, &reduce_map, lhs.num_exits, context);
+                Connection {
+                    entry_point: context.borrow_mut().add_gcflobdd_node(Self {
+                        num_exits: product.return_map.len(),
+                        grammar: lhs.grammar,
+                        node: GcflobddNodeType::Bdd(Bdd(product.entry_point)),
+                    }),
+                    return_map: product.return_map,
+                }
+            }
+            _ => unreachable!("Invalid configuration for grammar"),
+        }
+    }
     pub fn reduce(
         this: &Rch<Self>,
         reduce_map: Vec<usize>,

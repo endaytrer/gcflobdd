@@ -206,6 +206,54 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
         self.pair_product(rhs, context)
             .map(|(a, b)| op(a, b), context)
     }
+
+    pub fn mk_op_pair_map(
+        &self,
+        rhs: &Self,
+        op: impl Fn(&T, &T) -> T,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Self {
+        let mut new_return_handle = vec![];
+        let lhs_num_exits = self.connection.entry_point.get_num_exits();
+        let rhs_num_exits = rhs.connection.entry_point.get_num_exits();
+
+        let mut reduce_map = vec![0; lhs_num_exits * rhs_num_exits];
+
+        for j in 0..lhs_num_exits {
+            for k in 0..rhs_num_exits {
+                let a = &self.connection.return_map[j];
+                let b = &rhs.connection.return_map[k];
+                let v = op(a, b);
+
+                let idx = new_return_handle
+                    .iter()
+                    .position(|x| *x == v)
+                    .unwrap_or_else(|| {
+                        new_return_handle.push(v);
+                        new_return_handle.len() - 1
+                    });
+
+                reduce_map[k * lhs_num_exits + j] = idx;
+            }
+        }
+
+        let num_exits = new_return_handle.len();
+        let new_connection = GcflobddNode::pair_map(
+            &self.connection.entry_point,
+            &rhs.connection.entry_point,
+            reduce_map,
+            num_exits,
+            context,
+        );
+
+        GcflobddT {
+            connection: ConnectionT {
+                entry_point: new_connection.entry_point,
+                return_map: new_return_handle,
+            },
+            grammar: self.grammar,
+        }
+    }
 }
 
 impl Not for Gcflobdd<'_> {
