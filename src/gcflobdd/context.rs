@@ -1,5 +1,5 @@
 use crate::gcflobdd::Gcflobdd;
-use crate::gcflobdd::bdd::connection::BddConnectionPair;
+use crate::gcflobdd::bdd::connection::{BddConnection, BddConnectionPair};
 use crate::gcflobdd::bdd::node::BddNode;
 use crate::gcflobdd::connection::{Connection, ConnectionPair};
 use crate::gcflobdd::node::GcflobddNode;
@@ -45,6 +45,7 @@ pub struct Context<'grammar> {
     bdd_pair_product_cache: HashMap<(u64, u64), BddConnectionPair>,
     /// (lhs, rhs, op_matrix) -> Connection
     pair_map_cache: HashMap<(u64, u64, u64), Connection<'grammar>>,
+    bdd_pair_map_cache: HashMap<(u64, u64, u64), BddConnection>,
     reduction_cache: HashMap<ReductionCacheKey, Rch<GcflobddNode<'grammar>>>,
     bdd_reduction_cache: HashMap<ReductionCacheKey, Rch<BddNode>>,
 
@@ -134,6 +135,17 @@ impl<'grammar> Context<'grammar> {
         let hash3 = op_matrix.hash_code();
         self.pair_map_cache.get(&(hash1, hash2, hash3)).cloned()
     }
+    pub(super) fn get_bdd_pair_map_cache(
+        &self,
+        n1: &Rch<BddNode>,
+        n2: &Rch<BddNode>,
+        op_matrix: &Rch<Vec<usize>>,
+    ) -> Option<BddConnection> {
+        let hash1 = n1.hash_code();
+        let hash2 = n2.hash_code();
+        let hash3 = op_matrix.hash_code();
+        self.bdd_pair_map_cache.get(&(hash1, hash2, hash3)).cloned()
+    }
     pub(super) fn get_reduction_cache(
         &self,
         n: &Rch<GcflobddNode>,
@@ -181,6 +193,18 @@ impl<'grammar> Context<'grammar> {
         let hash2 = n2.hash_code();
         let hash3 = op_matrix.hash_code();
         self.pair_map_cache.insert((hash1, hash2, hash3), conn);
+    }
+    pub(super) fn set_bdd_pair_map_cache(
+        &mut self,
+        n1: &Rch<BddNode>,
+        n2: &Rch<BddNode>,
+        op_matrix: &Rch<Vec<usize>>,
+        conn: BddConnection,
+    ) {
+        let hash1 = n1.hash_code();
+        let hash2 = n2.hash_code();
+        let hash3 = op_matrix.hash_code();
+        self.bdd_pair_map_cache.insert((hash1, hash2, hash3), conn);
     }
     pub(super) fn set_reduction_cache(
         &mut self,

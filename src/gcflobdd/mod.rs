@@ -68,8 +68,10 @@ macro_rules! _define_op_legacy {
 }
 macro_rules! define_op_comparison {
     ($name: ident, $name_new:ident, $name_legacy:ident, $op_code:ident, $op:expr) => {
+        #[cfg(not(feature = "separate_reduce_map"))]
         _define_op_new!($name, $op_code, $op);
-        // define_op_legacy!($name, $op_code, $op);
+        #[cfg(feature = "separate_reduce_map")]
+        _define_op_legacy!($name, $op_code, $op);
         // pub fn $name(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
         //     let a = self.$name_new(rhs, context);
         //     let b = self.$name_legacy(rhs, context);

@@ -229,10 +229,13 @@ impl BddNode {
     pub fn pair_map(
         lhs: &Rch<Self>,
         rhs: &Rch<Self>,
-        reduce_map: &[usize],
+        reduce_matrix: &Rch<Vec<usize>>,
         lhs_num_exits: usize,
         context: &RefCell<Context<'_>>,
     ) -> BddConnection {
+        if let Some(t) = context.borrow().get_bdd_pair_map_cache(lhs, rhs, reduce_matrix) {
+            return t;
+        }
         let mut leaf_map = std::collections::HashMap::new();
         let mut return_map = vec![];
         let mut cache = std::collections::HashMap::new();
@@ -240,7 +243,7 @@ impl BddNode {
         let entry_point = Self::pair_map_recursive(
             lhs,
             rhs,
-            reduce_map,
+            reduce_matrix,
             lhs_num_exits,
             context,
             &mut leaf_map,
@@ -248,10 +251,14 @@ impl BddNode {
             &mut cache,
         );
 
-        BddConnection {
+        let ans = BddConnection {
             entry_point,
             return_map: context.borrow_mut().add_return_map(return_map),
-        }
+        };
+        context
+            .borrow_mut()
+            .set_bdd_pair_map_cache(lhs, rhs, reduce_matrix, ans.clone());
+        ans
     }
 
     #[allow(clippy::too_many_arguments)]

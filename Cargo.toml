@@ -10,6 +10,7 @@ parking_lot = { version = "0.12.5", optional = true }
 [features]
 default = []
 sync = ["dep:parking_lot"]
+separate_reduce_map = []
 
 [[test]]
 name = "n_queens"

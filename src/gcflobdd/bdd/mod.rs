@@ -53,7 +53,7 @@ impl Bdd {
     pub fn pair_map(
         &self,
         rhs: &Self,
-        reduce_map: &[usize],
+        reduce_map: &Rch<Vec<usize>>,
         lhs_num_exits: usize,
         context: &RefCell<Context<'_>>,
     ) -> BddConnection {
