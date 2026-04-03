@@ -5,12 +5,17 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+#[cfg(feature = "fx-hash")]
+use rustc_hash::FxHasher as DefaultHasher;
+#[cfg(not(feature = "fx-hash"))]
+use std::hash::DefaultHasher;
+
 pub struct HashCachedWithHasher<T: Hash, H: Hasher + Default> {
     value: T,
     cache: RwLock<Option<u64>>,
     hasher: PhantomData<H>,
 }
-pub type HashCached<T> = HashCachedWithHasher<T, std::hash::DefaultHasher>;
+pub type HashCached<T> = HashCachedWithHasher<T, DefaultHasher>;
 pub type Arch<T> = Arc<HashCached<T>>;
 
 impl<T: Hash + Debug, H: Hasher + Default> Debug for HashCachedWithHasher<T, H> {

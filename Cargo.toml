@@ -6,11 +6,13 @@ edition = "2024"
 [dependencies]
 lazy-regex = "3.6.0"
 parking_lot = { version = "0.12.5", optional = true }
+rustc-hash = { version = "2.1.2", optional = true }
 
 [features]
-default = []
+default = ["fx-hash"]
 sync = ["dep:parking_lot"]
 separate_reduce_map = []
+fx-hash = ["dep:rustc-hash"]
 
 [[test]]
 name = "n_queens"

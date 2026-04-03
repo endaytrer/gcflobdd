@@ -8,6 +8,12 @@ use crate::{
     utils::hash_cache::Rch,
 };
 
+#[cfg(feature = "fx-hash")]
+use rustc_hash::FxHashMap as HashMap;
+
+#[cfg(not(feature = "fx-hash"))]
+use std::collections::HashMap;
+
 #[derive(Debug, Hash)]
 pub enum BddNode {
     Internal(BddInternalNode),
@@ -90,9 +96,9 @@ impl BddNode {
             return t;
         }
 
-        let mut leaf_map = std::collections::HashMap::new();
+        let mut leaf_map = HashMap::default();
         let mut return_map = Vec::with_capacity(lhs_num_exits * rhs_num_exits);
-        let mut pair_cache = std::collections::HashMap::new();
+        let mut pair_cache = HashMap::default();
         let entry_point = Self::pair_product_recursive(
             lhs,
             rhs,
@@ -116,9 +122,9 @@ impl BddNode {
         lhs: &Rch<Self>,
         rhs: &Rch<Self>,
         context: &RefCell<Context<'_>>,
-        leaf_map: &mut std::collections::HashMap<(usize, usize), usize>,
+        leaf_map: &mut HashMap<(usize, usize), usize>,
         return_map: &mut Vec<(usize, usize)>,
-        pair_cache: &mut std::collections::HashMap<(u64, u64), Rch<Self>>,
+        pair_cache: &mut HashMap<(u64, u64), Rch<Self>>,
     ) -> Rch<Self> {
         let hash1 = lhs.hash_code();
         let hash2 = rhs.hash_code();
@@ -242,9 +248,9 @@ impl BddNode {
         {
             return t;
         }
-        let mut leaf_map = std::collections::HashMap::new();
+        let mut leaf_map = HashMap::default();
         let mut return_map = Vec::with_capacity(lhs_num_exits * rhs_num_exits);
-        let mut cache = std::collections::HashMap::new();
+        let mut cache = HashMap::default();
 
         let entry_point = Self::pair_map_recursive(
             lhs,
@@ -274,9 +280,9 @@ impl BddNode {
         reduce_map: &[usize],
         lhs_num_exits: usize,
         context: &RefCell<Context<'_>>,
-        leaf_map: &mut std::collections::HashMap<usize, usize>,
+        leaf_map: &mut HashMap<usize, usize>,
         return_map: &mut Vec<usize>,
-        pair_cache: &mut std::collections::HashMap<(u64, u64), Rch<Self>>,
+        pair_cache: &mut HashMap<(u64, u64), Rch<Self>>,
     ) -> Rch<Self> {
         let hash1 = lhs.hash_code();
         let hash2 = rhs.hash_code();

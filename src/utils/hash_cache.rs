@@ -6,13 +6,18 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::rc::Rc;
 
+#[cfg(feature = "fx-hash")]
+use rustc_hash::FxHasher as DefaultHasher;
+#[cfg(not(feature = "fx-hash"))]
+use std::hash::DefaultHasher;
+
 #[derive(Clone)]
 pub struct HashCachedWithHasher<T: Hash, H: Hasher + Default> {
     value: T,
     cache: RefCell<Option<u64>>,
     hasher: PhantomData<H>,
 }
-pub type HashCached<T> = HashCachedWithHasher<T, std::hash::DefaultHasher>;
+pub type HashCached<T> = HashCachedWithHasher<T, DefaultHasher>;
 pub type Rch<T> = Rc<HashCached<T>>;
 
 impl<T: Hash + Debug, H: Hasher + Default> Debug for HashCachedWithHasher<T, H> {

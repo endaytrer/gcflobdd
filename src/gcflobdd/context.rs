@@ -7,7 +7,12 @@ use crate::gcflobdd::return_map::ReturnMap;
 use crate::utils::hash_cache::{HashCached, Rch};
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
-use std::{collections::HashMap, rc::Rc};
+use std::rc::Rc;
+
+#[cfg(feature = "fx-hash")]
+use rustc_hash::{FxHashMap as HashMap, FxHasher as DefaultHasher};
+#[cfg(not(feature = "fx-hash"))]
+use std::{collections::HashMap, hash::DefaultHasher};
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct ReductionCacheKey(u64, u64);
@@ -15,8 +20,8 @@ struct ReductionCacheKey(u64, u64);
 impl ReductionCacheKey {
     fn new<T: Hash>(node: &Rch<T>, reduction_map: &[usize]) -> Self {
         let hash_1 = node.hash_code();
-        let mut hasher = std::hash::DefaultHasher::new();
-        reduction_map.iter().for_each(|&i| i.hash(&mut hasher));
+        let mut hasher = DefaultHasher::default();
+        reduction_map.hash(&mut hasher);
         let hash_2 = hasher.finish();
         Self(hash_1, hash_2)
     }
@@ -59,7 +64,7 @@ impl<'grammar> Context<'grammar> {
         &mut self,
         node: GcflobddNode<'grammar>,
     ) -> Rch<GcflobddNode<'grammar>> {
-        let mut hasher = std::hash::DefaultHasher::new();
+        let mut hasher = DefaultHasher::default();
         node.hash(&mut hasher);
         let hash = hasher.finish();
         self.gcflobdd_node_table
@@ -68,7 +73,7 @@ impl<'grammar> Context<'grammar> {
             .clone()
     }
     pub(super) fn add_bdd_node(&mut self, node: BddNode) -> Rch<BddNode> {
-        let mut hasher = std::hash::DefaultHasher::new();
+        let mut hasher = DefaultHasher::default();
         node.hash(&mut hasher);
         let hash = hasher.finish();
         self.bdd_node_table
@@ -77,7 +82,7 @@ impl<'grammar> Context<'grammar> {
             .clone()
     }
     pub(super) fn add_return_map(&mut self, return_map: ReturnMap) -> Rch<ReturnMap> {
-        let mut hasher = std::hash::DefaultHasher::new();
+        let mut hasher = DefaultHasher::default();
         return_map.hash(&mut hasher);
         let hash = hasher.finish();
         self.return_map_table
@@ -86,7 +91,7 @@ impl<'grammar> Context<'grammar> {
             .clone()
     }
     pub(super) fn add_reduce_matrix(&mut self, op_matrix: Vec<usize>) -> Rch<Vec<usize>> {
-        let mut hasher = std::hash::DefaultHasher::new();
+        let mut hasher = DefaultHasher::default();
         op_matrix.hash(&mut hasher);
         let hash = hasher.finish();
         self.reduce_matrix_table

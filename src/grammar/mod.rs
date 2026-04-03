@@ -1,6 +1,12 @@
-use std::{collections::HashMap, rc::Rc};
+use std::rc::Rc;
 
 use lazy_regex::{regex_captures, regex_is_match};
+
+#[cfg(feature = "fx-hash")]
+use rustc_hash::FxHashMap as HashMap;
+
+#[cfg(not(feature = "fx-hash"))]
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grammar {
@@ -78,7 +84,7 @@ impl Grammar {
         Ok(grammar)
     }
     pub fn new(production_rules: &[String]) -> Result<Self, ParseError> {
-        let mut symbol_map = HashMap::new();
+        let mut symbol_map = HashMap::default();
         let mut terminal_node = None;
         let mut rules = production_rules.iter();
         let first_rule = rules

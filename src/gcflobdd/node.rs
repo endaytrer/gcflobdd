@@ -8,13 +8,16 @@ use crate::{
     grammar::{GrammarNode, GrammarNodeType},
     utils::hash_cache::Rch,
 };
+#[cfg(feature = "fx-hash")]
+use rustc_hash::{FxHashMap as HashMap, FxHasher as DefaultHasher};
 use std::{
     cell::RefCell,
-    collections::HashMap,
     hash::{Hash, Hasher},
     mem::MaybeUninit,
     rc::Rc,
 };
+#[cfg(not(feature = "fx-hash"))]
+use std::{collections::HashMap, hash::DefaultHasher};
 
 pub struct GcflobddNode<'grammar> {
     num_exits: usize,
@@ -426,7 +429,11 @@ impl<'grammar> GcflobddNode<'grammar> {
                 let lhs_connection_list = &lhs_node.connections[lhs_node.connections.len() - 1];
                 let rhs_connection_list = &rhs_node.connections[rhs_node.connections.len() - 1];
 
+                #[cfg(feature = "fx-hash")]
+                let mut new_connection_hashes = HashMap::default();
+                #[cfg(not(feature = "fx-hash"))]
                 let mut new_connection_hashes = HashMap::new();
+
                 let mut new_connections = Vec::with_capacity(connection_pair_list.len());
 
                 let mut exit_lookup = vec![usize::MAX; num_exits];
@@ -482,7 +489,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                             return_map: context.borrow_mut().add_return_map(mapped_return_map),
                         };
 
-                        let mut hasher = std::hash::DefaultHasher::new();
+                        let mut hasher = DefaultHasher::default();
                         new_connection.hash(&mut hasher);
                         let hash = hasher.finish();
 
@@ -517,7 +524,11 @@ impl<'grammar> GcflobddNode<'grammar> {
                             }
                             break;
                         }
+                        #[cfg(feature = "fx-hash")]
+                        let mut new_connection_hashes = HashMap::default();
+                        #[cfg(not(feature = "fx-hash"))]
                         let mut new_connection_hashes = HashMap::new();
+
                         let mut new_connections = Vec::with_capacity(connection_list.len());
 
                         let new_reduce_map = connection_list
@@ -554,7 +565,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                                     entry_point: new_entry,
                                     return_map: context.borrow_mut().add_return_map(new_return_map),
                                 };
-                                let mut hasher = std::hash::DefaultHasher::new();
+                                let mut hasher = DefaultHasher::default();
                                 new_connection.hash(&mut hasher);
                                 let hash = hasher.finish();
 
@@ -664,7 +675,11 @@ impl<'grammar> GcflobddNode<'grammar> {
                         }
                         break;
                     }
+                    #[cfg(feature = "fx-hash")]
+                    let mut new_connection_hashes = HashMap::default();
+                    #[cfg(not(feature = "fx-hash"))]
                     let mut new_connection_hashes = HashMap::new();
+
                     let mut new_connections = Vec::with_capacity(connection_list.len());
 
                     let new_reduce_map = connection_list
@@ -703,7 +718,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                                 entry_point: new_entry,
                                 return_map: context.borrow_mut().add_return_map(new_return_map),
                             };
-                            let mut hasher = std::hash::DefaultHasher::new();
+                            let mut hasher = DefaultHasher::default();
                             new_connection.hash(&mut hasher);
                             let hash = hasher.finish();
 
