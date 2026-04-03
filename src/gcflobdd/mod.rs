@@ -41,12 +41,46 @@ macro_rules! define_op {
             {
                 return ans;
             }
+            let ans = self.mk_op_pair_map(rhs, $op, context);
+            context
+                .borrow_mut()
+                .set_op_cache::<$op_code>(self.clone(), rhs.clone(), ans.clone());
+            ans
+        }
+    };
+}
+macro_rules! define_op_legacy {
+    ($name:ident, $op_code:ident, $op:expr) => {
+        pub fn $name(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
+            if let Some(ans) = context
+                .borrow()
+                .get_op_cache::<$op_code>(self.clone(), rhs.clone())
+            {
+                return ans;
+            }
             let ans = self.mk_op(rhs, $op, context);
             context
                 .borrow_mut()
                 .set_op_cache::<$op_code>(self.clone(), rhs.clone(), ans.clone());
             ans
         }
+    };
+}
+macro_rules! define_op_comparison {
+    ($name: ident, $name_new:ident, $name_legacy:ident, $op_code:ident, $op:expr) => {
+        define_op!($name, $op_code, $op);
+        // define_op_legacy!($name, $op_code, $op);
+        // pub fn $name(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
+        //     let a = self.$name_new(rhs, context);
+        //     let b = self.$name_legacy(rhs, context);
+        //     println!("{:?}", a);
+        //     println!("{:?}", b);
+        //     println!("{}", $op_code);
+        //     if a != b {
+        //         panic!("$name_new and $name_legacy do not agree on $op_code");
+        //     }
+        //     b
+        // }
     };
 }
 impl<'grammar> Gcflobdd<'grammar> {
@@ -103,19 +137,43 @@ impl<'grammar> Gcflobdd<'grammar> {
         }
     }
 
-    define_op!(mk_and, OP_AND, |a: &bool, b: &bool| -> bool { *a && *b });
-    define_op!(mk_or, OP_OR, |a: &bool, b: &bool| -> bool { *a || *b });
-    define_op!(mk_xor, OP_XOR, |a: &bool, b: &bool| -> bool { *a ^ *b });
-    define_op!(mk_nand, OP_NAND, |a: &bool, b: &bool| -> bool {
+    define_op_comparison!(mk_and, mk_and_new, mk_and_legacy, OP_AND, |a: &bool,
+                                                                      b: &bool|
+     -> bool {
+        *a && *b
+    });
+    define_op_comparison!(mk_or, mk_or_new, mk_or_legacy, OP_OR, |a: &bool,
+                                                                  b: &bool|
+     -> bool {
+        *a || *b
+    });
+    define_op_comparison!(mk_xor, mk_xor_new, mk_xor_legacy, OP_XOR, |a: &bool,
+                                                                      b: &bool|
+     -> bool {
+        *a ^ *b
+    });
+    define_op_comparison!(mk_nand, mk_nand_new, mk_nand_legacy, OP_NAND, |a: &bool,
+                                                                          b: &bool|
+     -> bool {
         !(*a && *b)
     });
-    define_op!(mk_nor, OP_NOR, |a: &bool, b: &bool| -> bool { !(*a || *b) });
-    define_op!(mk_xnor, OP_XNOR, |a: &bool, b: &bool| -> bool {
+    define_op_comparison!(mk_nor, mk_nor_new, mk_nor_legacy, OP_NOR, |a: &bool,
+                                                                      b: &bool|
+     -> bool {
+        !(*a || *b)
+    });
+    define_op_comparison!(mk_xnor, mk_xnor_new, mk_xnor_legacy, OP_XNOR, |a: &bool,
+                                                                          b: &bool|
+     -> bool {
         !(*a ^ *b)
     });
-    define_op!(mk_implies, OP_IMPLIES, |a: &bool, b: &bool| -> bool {
-        !(*a) || *b
-    });
+    define_op_comparison!(
+        mk_implies,
+        mk_implies_new,
+        mk_implies_legacy,
+        OP_IMPLIES,
+        |a: &bool, b: &bool| -> bool { !(*a) || *b }
+    );
 
     pub fn find_one_satisfiable_assignment(&self) -> Option<Vec<Option<bool>>> {
         self.find_one_path_to(&true)
@@ -182,7 +240,7 @@ impl<'grammar, T> GcflobddT<'grammar, T> {
         let num_exits = new_return_handle.len();
         let entry_point = GcflobddNode::reduce(
             &self.connection.entry_point,
-            mapping_array,
+            mapping_array.into(),
             num_exits,
             context,
         );
@@ -238,18 +296,22 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
         }
 
         let num_exits = new_return_handle.len();
-        let new_connection = GcflobddNode::pair_map(
+        let ConnectionT {
+            entry_point,
+            return_map,
+        } = GcflobddNode::pair_map(
             &self.connection.entry_point,
             &rhs.connection.entry_point,
             reduce_map,
             num_exits,
             context,
         );
+        let mapped_return_map = return_map.iter().map(|i| new_return_handle[*i]).collect();
 
         GcflobddT {
             connection: ConnectionT {
-                entry_point: new_connection.entry_point,
-                return_map: new_return_handle,
+                entry_point,
+                return_map: mapped_return_map,
             },
             grammar: self.grammar,
         }
