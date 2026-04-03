@@ -32,7 +32,7 @@ impl<'grammar, T: std::fmt::Debug> std::fmt::Debug for GcflobddT<'grammar, T> {
 
 pub type Gcflobdd<'grammar> = GcflobddT<'grammar, bool>;
 
-macro_rules! define_op {
+macro_rules! _define_op_new {
     ($name:ident, $op_code:ident, $op:expr) => {
         pub fn $name(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
             if let Some(ans) = context
@@ -49,7 +49,7 @@ macro_rules! define_op {
         }
     };
 }
-macro_rules! define_op_legacy {
+macro_rules! _define_op_legacy {
     ($name:ident, $op_code:ident, $op:expr) => {
         pub fn $name(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
             if let Some(ans) = context
@@ -68,7 +68,7 @@ macro_rules! define_op_legacy {
 }
 macro_rules! define_op_comparison {
     ($name: ident, $name_new:ident, $name_legacy:ident, $op_code:ident, $op:expr) => {
-        define_op!($name, $op_code, $op);
+        _define_op_new!($name, $op_code, $op);
         // define_op_legacy!($name, $op_code, $op);
         // pub fn $name(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
         //     let a = self.$name_new(rhs, context);
@@ -296,13 +296,14 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
         }
 
         let num_exits = new_return_handle.len();
+        let reduce_matrix = context.borrow_mut().add_reduce_matrix(reduce_map);
         let ConnectionT {
             entry_point,
             return_map,
         } = GcflobddNode::pair_map(
             &self.connection.entry_point,
             &rhs.connection.entry_point,
-            reduce_map,
+            &reduce_matrix,
             num_exits,
             context,
         );

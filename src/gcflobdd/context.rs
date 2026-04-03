@@ -1,7 +1,7 @@
 use crate::gcflobdd::Gcflobdd;
 use crate::gcflobdd::bdd::connection::BddConnectionPair;
 use crate::gcflobdd::bdd::node::BddNode;
-use crate::gcflobdd::connection::ConnectionPair;
+use crate::gcflobdd::connection::{Connection, ConnectionPair};
 use crate::gcflobdd::node::GcflobddNode;
 use crate::gcflobdd::return_map::ReturnMap;
 use crate::utils::hash_cache::{HashCached, Rch};
@@ -33,13 +33,21 @@ const OP_END: Operation = 7usize;
 
 #[derive(Default)]
 pub struct Context<'grammar> {
+    // Node tables
     gcflobdd_node_table: HashMap<u64, Rch<GcflobddNode<'grammar>>>,
     bdd_node_table: HashMap<u64, Rch<BddNode>>,
+
     return_map_table: HashMap<u64, Rch<ReturnMap>>,
+    reduce_matrix_table: HashMap<u64, Rch<Vec<usize>>>,
+
+    // caches
     pair_product_cache: HashMap<(u64, u64), ConnectionPair<'grammar>>,
     bdd_pair_product_cache: HashMap<(u64, u64), BddConnectionPair>,
+    /// (lhs, rhs, op_matrix) -> Connection
+    pair_map_cache: HashMap<(u64, u64, u64), Connection<'grammar>>,
     reduction_cache: HashMap<ReductionCacheKey, Rch<GcflobddNode<'grammar>>>,
     bdd_reduction_cache: HashMap<ReductionCacheKey, Rch<BddNode>>,
+
     op_cache: [HashMap<(Gcflobdd<'grammar>, Gcflobdd<'grammar>), Gcflobdd<'grammar>>; OP_END],
 }
 impl<'grammar> Context<'grammar> {
@@ -76,7 +84,15 @@ impl<'grammar> Context<'grammar> {
             .or_insert(Rc::new(HashCached::with_hash(return_map, hash)))
             .clone()
     }
-
+    pub(super) fn add_reduce_matrix(&mut self, op_matrix: Vec<usize>) -> Rch<Vec<usize>> {
+        let mut hasher = std::hash::DefaultHasher::new();
+        op_matrix.hash(&mut hasher);
+        let hash = hasher.finish();
+        self.reduce_matrix_table
+            .entry(hash)
+            .or_insert(Rc::new(HashCached::with_hash(op_matrix, hash)))
+            .clone()
+    }
     pub(super) fn get_pair_product_cache(
         &self,
         n1: &Rch<GcflobddNode>,
@@ -106,6 +122,17 @@ impl<'grammar> Context<'grammar> {
             return Some(t.flipped());
         }
         None
+    }
+    pub(super) fn get_pair_map_cache(
+        &self,
+        n1: &Rch<GcflobddNode>,
+        n2: &Rch<GcflobddNode>,
+        op_matrix: &Rch<Vec<usize>>,
+    ) -> Option<Connection<'grammar>> {
+        let hash1 = n1.hash_code();
+        let hash2 = n2.hash_code();
+        let hash3 = op_matrix.hash_code();
+        self.pair_map_cache.get(&(hash1, hash2, hash3)).cloned()
     }
     pub(super) fn get_reduction_cache(
         &self,
@@ -142,6 +169,18 @@ impl<'grammar> Context<'grammar> {
         let hash1 = n1.hash_code();
         let hash2 = n2.hash_code();
         self.bdd_pair_product_cache.insert((hash1, hash2), conn);
+    }
+    pub(super) fn set_pair_map_cache(
+        &mut self,
+        n1: &Rch<GcflobddNode>,
+        n2: &Rch<GcflobddNode>,
+        op_matrix: &Rch<Vec<usize>>,
+        conn: Connection<'grammar>,
+    ) {
+        let hash1 = n1.hash_code();
+        let hash2 = n2.hash_code();
+        let hash3 = op_matrix.hash_code();
+        self.pair_map_cache.insert((hash1, hash2, hash3), conn);
     }
     pub(super) fn set_reduction_cache(
         &mut self,
@@ -269,6 +308,11 @@ impl<'grammar> Context<'grammar> {
         // clear return map after node table gc
         self.return_map_table = self
             .return_map_table
+            .drain()
+            .filter(|(_, v)| Rc::strong_count(v) > 1)
+            .collect();
+        self.reduce_matrix_table = self
+            .reduce_matrix_table
             .drain()
             .filter(|(_, v)| Rc::strong_count(v) > 1)
             .collect();

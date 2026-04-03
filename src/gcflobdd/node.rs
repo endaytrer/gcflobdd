@@ -308,29 +308,49 @@ impl<'grammar> GcflobddNode<'grammar> {
     pub fn pair_map(
         lhs: &Rch<Self>,
         rhs: &Rch<Self>,
-        reduce_matrix: Vec<usize>, // should be a ReduceMap if either lhs / rhs is a dont care
-        num_exits: usize,          // it's only used in reduce of don't care and normal nodes
+        reduce_matrix: &Rch<Vec<usize>>, // should be a ReduceMap if either lhs / rhs is a dont care
+        num_exits: usize,                // it's only used in reduce of don't care and normal nodes
         context: &RefCell<Context<'grammar>>,
     ) -> Connection<'grammar> {
-        match (&lhs.node, &rhs.node) {
+        if num_exits == 1 {
+            return Connection {
+                entry_point: Self::mk_no_distinction(lhs.grammar, context),
+                return_map: context.borrow_mut().add_return_map(vec![reduce_matrix[0]]),
+            };
+        }
+        if let Some(t) = context.borrow().get_pair_map_cache(lhs, rhs, reduce_matrix) {
+            return t;
+        }
+
+        let ans = match (&lhs.node, &rhs.node) {
             (GcflobddNodeType::DontCare, GcflobddNodeType::DontCare) => {
                 debug_assert_eq!(reduce_matrix.len(), 1);
                 Connection {
                     entry_point: Self::mk_no_distinction(lhs.grammar, context),
-                    return_map: context.borrow_mut().add_return_map(reduce_matrix),
+                    return_map: context.borrow_mut().add_return_map(vec![reduce_matrix[0]]),
                 }
             }
             (GcflobddNodeType::DontCare, _) => {
                 debug_assert_eq!(reduce_matrix.len(), rhs.num_exits);
                 Connection::new_sequential(
-                    Self::reduce(rhs, reduce_matrix.into(), num_exits, context),
+                    Self::reduce(
+                        rhs,
+                        reduce_matrix.as_ref().as_ref().clone().into(),
+                        num_exits,
+                        context,
+                    ),
                     context,
                 )
             }
             (_, GcflobddNodeType::DontCare) => {
                 debug_assert_eq!(reduce_matrix.len(), lhs.num_exits);
                 Connection::new_sequential(
-                    Self::reduce(lhs, reduce_matrix.into(), num_exits, context),
+                    Self::reduce(
+                        lhs,
+                        reduce_matrix.as_ref().as_ref().clone().into(),
+                        num_exits,
+                        context,
+                    ),
                     context,
                 )
             }
@@ -431,13 +451,16 @@ impl<'grammar> GcflobddNode<'grammar> {
                             }
                         }
 
+                        let inner_reduce_map =
+                            context.borrow_mut().add_reduce_matrix(inner_reduce_map);
+
                         let Connection {
                             entry_point,
                             return_map: inner_return_map,
                         } = Self::pair_map(
                             &lhs_connection.entry_point,
                             &rhs_connection.entry_point,
-                            inner_reduce_map,
+                            &inner_reduce_map,
                             inner_value_map.len(),
                             context,
                         );
@@ -468,113 +491,124 @@ impl<'grammar> GcflobddNode<'grammar> {
                 let mut reduce_map_max = new_connection_hashes.len();
 
                 if return_map.len() == 1 {
-                    return Connection::new_sequential(
-                        Self::mk_no_distinction(lhs.grammar, context),
-                        context,
-                    );
-                }
-
-                let mut new_connection_list: Vec<MaybeUninit<Vec<Connection<'grammar>>>> =
-                    Vec::with_capacity(lhs_node.connections.len());
-                unsafe {
-                    new_connection_list.set_len(lhs_node.connections.len());
-                }
-                new_connection_list[lhs_node.connections.len() - 1].write(new_connections);
-
-                // 3. call reduce for connection 0..n-1 (backwards)
-                for (idx, connection_list) in product_connections.iter().enumerate().rev() {
-                    if reduce_map_max == layer_reduce_map.len() {
-                        for (i, new_connection) in
-                            new_connection_list.iter_mut().enumerate().take(idx + 1)
-                        {
-                            new_connection.write(product_connections[i].clone());
-                        }
-                        break;
+                    Connection {
+                        entry_point: Self::mk_no_distinction(lhs.grammar, context),
+                        return_map: context.borrow_mut().add_return_map(return_map),
                     }
-                    let mut new_connection_hashes = HashMap::new();
-                    let mut new_connections = vec![];
+                } else {
+                    let mut new_connection_list: Vec<MaybeUninit<Vec<Connection<'grammar>>>> =
+                        Vec::with_capacity(lhs_node.connections.len());
+                    unsafe {
+                        new_connection_list.set_len(lhs_node.connections.len());
+                    }
+                    new_connection_list[lhs_node.connections.len() - 1].write(new_connections);
 
-                    let new_reduce_map = connection_list
-                        .iter()
-                        .map(|connection| {
-                            let mut inverse_lookup = vec![None; reduce_map_max];
-                            let mut num_outs = 0;
-                            let mut new_return_map = vec![];
-                            let reduce_map_outer = connection
-                                .return_map
-                                .iter()
-                                .map(|x| {
-                                    let ans = layer_reduce_map[*x];
-                                    inverse_lookup[ans].get_or_insert_with(|| {
-                                        num_outs += 1;
-                                        new_return_map.push(ans);
-                                        num_outs - 1
-                                    });
-                                    ans
+                    // 3. call reduce for connection 0..n-1 (backwards)
+                    for (idx, connection_list) in product_connections.iter().enumerate().rev() {
+                        if reduce_map_max == layer_reduce_map.len() {
+                            for (i, new_connection) in
+                                new_connection_list.iter_mut().enumerate().take(idx + 1)
+                            {
+                                new_connection.write(product_connections[i].clone());
+                            }
+                            break;
+                        }
+                        let mut new_connection_hashes = HashMap::new();
+                        let mut new_connections = vec![];
+
+                        let new_reduce_map = connection_list
+                            .iter()
+                            .map(|connection| {
+                                let mut inverse_lookup = vec![None; reduce_map_max];
+                                let mut num_outs = 0;
+                                let mut new_return_map = vec![];
+                                let reduce_map_outer = connection
+                                    .return_map
+                                    .iter()
+                                    .map(|x| {
+                                        let ans = layer_reduce_map[*x];
+                                        inverse_lookup[ans].get_or_insert_with(|| {
+                                            num_outs += 1;
+                                            new_return_map.push(ans);
+                                            num_outs - 1
+                                        });
+                                        ans
+                                    })
+                                    .collect::<Vec<_>>();
+                                let reduce_map_inner = reduce_map_outer
+                                    .iter()
+                                    .map(|x| inverse_lookup[*x].unwrap())
+                                    .collect::<Vec<_>>();
+                                let new_entry = GcflobddNode::reduce(
+                                    &connection.entry_point,
+                                    reduce_map_inner.into(),
+                                    new_return_map.len(),
+                                    context,
+                                );
+                                let new_connection = ConnectionT {
+                                    entry_point: new_entry,
+                                    return_map: context.borrow_mut().add_return_map(new_return_map),
+                                };
+                                let mut hasher = std::hash::DefaultHasher::new();
+                                new_connection.hash(&mut hasher);
+                                let hash = hasher.finish();
+
+                                *new_connection_hashes.entry(hash).or_insert_with(|| {
+                                    new_connections.push(new_connection);
+                                    new_connections.len() - 1
                                 })
-                                .collect::<Vec<_>>();
-                            let reduce_map_inner = reduce_map_outer
-                                .iter()
-                                .map(|x| inverse_lookup[*x].unwrap())
-                                .collect::<Vec<_>>();
-                            let new_entry = GcflobddNode::reduce(
-                                &connection.entry_point,
-                                reduce_map_inner.into(),
-                                new_return_map.len(),
-                                context,
-                            );
-                            let new_connection = ConnectionT {
-                                entry_point: new_entry,
-                                return_map: context.borrow_mut().add_return_map(new_return_map),
-                            };
-                            let mut hasher = std::hash::DefaultHasher::new();
-                            new_connection.hash(&mut hasher);
-                            let hash = hasher.finish();
-
-                            *new_connection_hashes.entry(hash).or_insert_with(|| {
-                                new_connections.push(new_connection);
-                                new_connections.len() - 1
                             })
-                        })
-                        .collect();
-                    reduce_map_max = new_connection_hashes.len();
-                    layer_reduce_map = new_reduce_map;
-                    new_connection_list[idx].write(new_connections);
-                }
+                            .collect();
+                        reduce_map_max = new_connection_hashes.len();
+                        layer_reduce_map = new_reduce_map;
+                        new_connection_list[idx].write(new_connections);
+                    }
 
-                let new_connection_list = unsafe {
-                    std::mem::transmute::<Vec<MaybeUninit<Vec<_>>>, Vec<Vec<_>>>(
-                        new_connection_list,
-                    )
-                };
+                    let new_connection_list = unsafe {
+                        std::mem::transmute::<Vec<MaybeUninit<Vec<_>>>, Vec<Vec<_>>>(
+                            new_connection_list,
+                        )
+                    };
 
-                let entry_point = context.borrow_mut().add_gcflobdd_node(Self {
-                    num_exits,
-                    grammar: lhs.grammar,
-                    node: GcflobddNodeType::Internal(InternalNode {
-                        connections: new_connection_list,
-                    }),
-                });
-                let return_map = context.borrow_mut().add_return_map(return_map);
+                    let entry_point = context.borrow_mut().add_gcflobdd_node(Self {
+                        num_exits,
+                        grammar: lhs.grammar,
+                        node: GcflobddNodeType::Internal(InternalNode {
+                            connections: new_connection_list,
+                        }),
+                    });
+                    let return_map = context.borrow_mut().add_return_map(return_map);
 
-                Connection {
-                    entry_point,
-                    return_map,
+                    Connection {
+                        entry_point,
+                        return_map,
+                    }
                 }
             }
             (GcflobddNodeType::Bdd(lhs_bdd), GcflobddNodeType::Bdd(rhs_bdd)) => {
-                let product = lhs_bdd.pair_map(rhs_bdd, &reduce_matrix, lhs.num_exits, context);
-                Connection {
-                    entry_point: context.borrow_mut().add_gcflobdd_node(Self {
-                        num_exits: product.return_map.len(),
-                        grammar: lhs.grammar,
-                        node: GcflobddNodeType::Bdd(Bdd(product.entry_point)),
-                    }),
-                    return_map: product.return_map,
+                let product = lhs_bdd.pair_map(rhs_bdd, reduce_matrix, lhs.num_exits, context);
+                if product.return_map.len() == 1 {
+                    Connection {
+                        entry_point: Self::mk_no_distinction(lhs.grammar, context),
+                        return_map: product.return_map,
+                    }
+                } else {
+                    Connection {
+                        entry_point: context.borrow_mut().add_gcflobdd_node(Self {
+                            num_exits: product.return_map.len(),
+                            grammar: lhs.grammar,
+                            node: GcflobddNodeType::Bdd(Bdd(product.entry_point)),
+                        }),
+                        return_map: product.return_map,
+                    }
                 }
             }
             _ => unreachable!("Invalid configuration for grammar"),
-        }
+        };
+        context
+            .borrow_mut()
+            .set_pair_map_cache(lhs, rhs, reduce_matrix, ans.clone());
+        ans
     }
     pub fn reduce(
         this: &Rch<Self>,

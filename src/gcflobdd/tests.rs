@@ -10,10 +10,10 @@ macro_rules! grammar_choice {
                 "S0 -> a".to_string(),
             ])
             .unwrap(),
-            // Grammar::new(&["S2 -> BDD(4)".to_string()]).unwrap(),
-            // Grammar::new(&["S2 -> BDD(2) BDD(2)".to_string()]).unwrap(),
-            // Grammar::new(&["S2 -> S1 S1".to_string(), "S1 -> BDD(2)".to_string()]).unwrap(),
-            // Grammar::new_bdd(4),
+            Grammar::new(&["S2 -> BDD(4)".to_string()]).unwrap(),
+            Grammar::new(&["S2 -> BDD(2) BDD(2)".to_string()]).unwrap(),
+            Grammar::new(&["S2 -> S1 S1".to_string(), "S1 -> BDD(2)".to_string()]).unwrap(),
+            Grammar::new_bdd(4),
         ]
     };
 }
@@ -170,6 +170,15 @@ fn test_node_table_failed() {
     assert_eq!(c1_and_not_c1, c0);
 }
 
+#[test]
+fn test_node_table_failed_bdd() {
+    let grammar = Grammar::new_bdd(2);
+    let context = RefCell::new(Context::default());
+    let c1 = Gcflobdd::mk_projection(0, &grammar, &context);
+    let c0 = Gcflobdd::mk_false(&grammar, &context);
+    let c1_and_not_c1 = c1.mk_and(&c1.mk_not(), &context);
+    assert_eq!(c1_and_not_c1, c0);
+}
 #[test]
 fn test_n_queen_failed() {
     let grammar = Grammar::new(&["S2 -> S1 S1".to_string(), "S1 -> a a".to_string()]).unwrap();
