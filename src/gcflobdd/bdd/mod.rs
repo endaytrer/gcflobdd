@@ -39,8 +39,14 @@ impl Bdd {
     pub fn find_one_path_to(&self, value: usize, bdd_size: usize) -> Option<Vec<Option<bool>>> {
         self.0.find_one_path_to(value, 0, bdd_size)
     }
-    pub fn pair_product(&self, rhs: &Self, context: &RefCell<Context<'_>>) -> BddConnectionPair {
-        BddNode::pair_product(&self.0, &rhs.0, context)
+    pub fn pair_product(
+        &self,
+        rhs: &Self,
+        lhs_num_exits: usize,
+        rhs_num_exits: usize,
+        context: &RefCell<Context<'_>>,
+    ) -> BddConnectionPair {
+        BddNode::pair_product(&self.0, &rhs.0, lhs_num_exits, rhs_num_exits, context)
     }
     pub fn reduce(
         &self,
@@ -55,9 +61,17 @@ impl Bdd {
         rhs: &Self,
         reduce_map: &Rch<Vec<usize>>,
         lhs_num_exits: usize,
+        rhs_num_exits: usize,
         context: &RefCell<Context<'_>>,
     ) -> BddConnection {
-        BddNode::pair_map(&self.0, &rhs.0, reduce_map, lhs_num_exits, context)
+        BddNode::pair_map(
+            &self.0,
+            &rhs.0,
+            reduce_map,
+            lhs_num_exits,
+            rhs_num_exits,
+            context,
+        )
     }
 }
 

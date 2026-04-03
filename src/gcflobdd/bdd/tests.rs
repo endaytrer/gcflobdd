@@ -35,7 +35,7 @@ fn test_pair_product() {
     let context = RefCell::new(Context::default());
     let c1 = Bdd::mk_projection(0, &context);
     let c2 = Bdd::mk_projection(1, &context);
-    let c3 = c1.pair_product(&c2, &context);
+    let c3 = c1.pair_product(&c2, 2, 2, &context);
     let return_map = c3.return_map;
     let c3 = Bdd(c3.entry_point);
     drop(c1);
@@ -55,7 +55,7 @@ fn test_reduce() {
     let context = RefCell::new(Context::default());
     let c1 = Bdd::mk_projection(0, &context);
     let c2 = Bdd::mk_projection(1, &context);
-    let c3 = c1.pair_product(&c2, &context);
+    let c3 = c1.pair_product(&c2, 2, 2, &context);
     let return_map = c3.return_map;
     assert_eq!(return_map, [(0, 0), (0, 1), (1, 0), (1, 1)]);
     let c3 = Bdd(c3.entry_point);
@@ -72,7 +72,7 @@ fn mk_op(
     reduce_map: &[usize],
     num_exits: usize,
 ) -> Bdd {
-    let c1 = lhs.pair_product(rhs, context);
+    let c1 = lhs.pair_product(rhs, 2, 2, context);
     let ans = Bdd(c1.entry_point);
     assert_eq!(c1.return_map, return_map);
     ans.reduce(reduce_map, num_exits, context)

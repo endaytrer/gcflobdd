@@ -253,6 +253,38 @@ impl<'grammar> Context<'grammar> {
     pub fn node_count(&self) -> usize {
         self.gcflobdd_node_table.len()
     }
+    pub fn size_estimate(&self) -> usize {
+        let mut total_size = 0;
+        total_size += self.gcflobdd_node_table.len()
+            * (size_of::<Rch<GcflobddNode<'grammar>>>() + size_of::<GcflobddNode<'grammar>>());
+        total_size +=
+            self.bdd_node_table.len() * (size_of::<Rch<BddNode>>() + size_of::<BddNode>());
+        total_size +=
+            self.return_map_table.len() * (size_of::<Rch<ReturnMap>>() + size_of::<ReturnMap>());
+        total_size += self.reduce_matrix_table.len()
+            * (size_of::<Rch<Vec<usize>>>() + size_of::<Vec<usize>>());
+
+        total_size += self.pair_product_cache.len()
+            * (size_of::<(u64, u64)>() + size_of::<ConnectionPair<'grammar>>());
+        total_size += self.bdd_pair_product_cache.len()
+            * (size_of::<(u64, u64)>() + size_of::<BddConnectionPair>());
+
+        total_size += self.pair_map_cache.len()
+            * (size_of::<(u64, u64, u64)>() + size_of::<Connection<'grammar>>());
+        total_size += self.bdd_pair_map_cache.len()
+            * (size_of::<(u64, u64, u64)>() + size_of::<BddConnection>());
+
+        total_size += self.reduction_cache.len()
+            * (size_of::<ReductionCacheKey>() + size_of::<Rch<GcflobddNode<'grammar>>>());
+        total_size += self.bdd_reduction_cache.len()
+            * (size_of::<ReductionCacheKey>() + size_of::<Rch<BddNode>>());
+
+        total_size += self.op_cache.iter().fold(0, |acc, cache| {
+            acc + cache.len() * (3 * size_of::<Gcflobdd<'grammar>>())
+        });
+
+        total_size
+    }
 
     fn gcflobdd_node_table_gc(node_table: &mut HashMap<u64, Rch<GcflobddNode<'grammar>>>) {
         let mut to_remove = Vec::new();

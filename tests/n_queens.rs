@@ -15,11 +15,96 @@ fn gen_balanced_grammar(level: usize) -> Vec<String> {
     grammar
 }
 
+fn gen_aligned_balanced_grammar_recursive(
+    num_exits: usize,
+    symbol_prefix: &str,
+    terminal_symbol: &str,
+) -> Vec<(usize, String)> {
+    if num_exits == 1 {
+        panic!("num_exits must be greater than 1");
+    }
+    if num_exits == 2 {
+        return vec![(2, format!("{} {}", terminal_symbol, terminal_symbol))];
+    }
+    if num_exits == 3 {
+        return [
+            vec![(3, format!("{}2 {}", symbol_prefix, terminal_symbol))],
+            gen_aligned_balanced_grammar_recursive(2, symbol_prefix, terminal_symbol),
+        ]
+        .concat();
+    }
+    let num_a_vars = num_exits / 2 + num_exits % 2;
+    let num_b_vars = num_exits / 2;
+    if num_a_vars == num_b_vars {
+        let mut productions =
+            gen_aligned_balanced_grammar_recursive(num_a_vars, symbol_prefix, terminal_symbol);
+        productions.insert(
+            0,
+            (
+                num_exits,
+                format!(
+                    "{}{} {}{}",
+                    symbol_prefix, productions[0].0, symbol_prefix, productions[0].0
+                ),
+            ),
+        );
+        return productions;
+    }
+    let a_productions =
+        gen_aligned_balanced_grammar_recursive(num_a_vars, symbol_prefix, terminal_symbol);
+    let b_productions =
+        gen_aligned_balanced_grammar_recursive(num_b_vars, symbol_prefix, terminal_symbol);
+    let mut symbols_map = vec![None; num_a_vars + 1];
+    for (sz, rule) in b_productions {
+        symbols_map[sz].get_or_insert(rule);
+    }
+    for (sz, rule) in a_productions {
+        symbols_map[sz].get_or_insert(rule);
+    }
+    symbols_map
+        .into_iter()
+        .enumerate()
+        .filter_map(|(sz, x)| x.map(|x| (sz, x)))
+        .chain(std::iter::once((
+            num_exits,
+            format!(
+                "{}{} {}{}",
+                symbol_prefix, num_a_vars, symbol_prefix, num_b_vars
+            ),
+        )))
+        .rev()
+        .collect()
+}
+
+fn gen_aligned_balanced_grammar(
+    num_exits: usize,
+    symbol_prefix: &str,
+    terminal_symbol: &str,
+) -> Vec<String> {
+    gen_aligned_balanced_grammar_recursive(num_exits, symbol_prefix, terminal_symbol)
+        .into_iter()
+        .map(|(sz, rule)| format!("{}{} -> {}", symbol_prefix, sz, rule))
+        .collect()
+}
+
+fn size_to_readable(size: usize) -> String {
+    let mut size = size as f64;
+    let mut unit = 0;
+    let prefixes = vec!["B", "KiB", "MiB", "GiB"];
+    while size >= 1024.0 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    format!("{:.2}{}", size, prefixes[unit])
+}
+
 fn main() {
     let mut n = 8;
     enum GrammarChoice {
         Default,
         Balanced,
+        AlignedBalanced,
+        FullAlignedBalanced,
         Ndd,
         Bdd,
     }
@@ -39,6 +124,10 @@ fn main() {
                 if i + 1 < args.len() {
                     match args[i + 1].as_str() {
                         "balanced" => grammar_choice = GrammarChoice::Balanced,
+                        "aligned-balanced" => grammar_choice = GrammarChoice::AlignedBalanced,
+                        "full-aligned-balanced" => {
+                            grammar_choice = GrammarChoice::FullAlignedBalanced
+                        }
                         "default" => grammar_choice = GrammarChoice::Default,
                         "ndd" => grammar_choice = GrammarChoice::Ndd,
                         "bdd" => grammar_choice = GrammarChoice::Bdd,
@@ -63,17 +152,27 @@ fn main() {
         n,
         match grammar_choice {
             GrammarChoice::Balanced => "balanced",
+            GrammarChoice::AlignedBalanced => "align-balanced",
+            GrammarChoice::FullAlignedBalanced => "full-align-balanced",
             GrammarChoice::Default => "default",
             GrammarChoice::Ndd => "ndd",
             GrammarChoice::Bdd => "bdd",
         }
     );
 
-    let start_time = std::time::Instant::now();
     let grammar = match grammar_choice {
         GrammarChoice::Balanced => {
             let l = (2.0 * (n as f64).log2()).ceil() as usize;
             let rules = gen_balanced_grammar(l);
+            Grammar::new(&rules).unwrap()
+        }
+        GrammarChoice::AlignedBalanced => {
+            let rules_a = gen_aligned_balanced_grammar(n, "S", "a");
+            let rules_b = gen_aligned_balanced_grammar(n, "G", format!("S{}", n).as_str());
+            Grammar::new(&[rules_b, rules_a].concat()).unwrap()
+        }
+        GrammarChoice::FullAlignedBalanced => {
+            let rules = gen_aligned_balanced_grammar(n * n, "S", "a");
             Grammar::new(&rules).unwrap()
         }
         GrammarChoice::Default => {
@@ -94,6 +193,7 @@ fn main() {
 
     let context = RefCell::new(Context::default());
 
+    let start_time = std::time::Instant::now();
     let mut vars = Vec::new();
     for i in 0..n {
         let mut row = Vec::new();
@@ -191,8 +291,9 @@ fn main() {
     let path = queen.find_one_satisfiable_assignment().unwrap();
     let end_time = std::time::Instant::now();
     println!(
-        "Solved in {} ms",
-        end_time.duration_since(start_time).as_millis()
+        "Solved in {} ms, with {} memory usage",
+        end_time.duration_since(start_time).as_millis(),
+        size_to_readable(context.borrow().size_estimate())
     );
     println!("Path:");
     for i in 0..n {

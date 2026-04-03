@@ -82,6 +82,8 @@ impl BddNode {
     pub(super) fn pair_product(
         lhs: &Rch<Self>,
         rhs: &Rch<Self>,
+        lhs_num_exits: usize,
+        rhs_num_exits: usize,
         context: &RefCell<Context<'_>>,
     ) -> BddConnectionPair {
         if let Some(t) = context.borrow().get_bdd_pair_product_cache(lhs, rhs) {
@@ -89,7 +91,7 @@ impl BddNode {
         }
 
         let mut leaf_map = std::collections::HashMap::new();
-        let mut return_map = vec![];
+        let mut return_map = Vec::with_capacity(lhs_num_exits * rhs_num_exits);
         let mut pair_cache = std::collections::HashMap::new();
         let entry_point = Self::pair_product_recursive(
             lhs,
@@ -231,13 +233,17 @@ impl BddNode {
         rhs: &Rch<Self>,
         reduce_matrix: &Rch<Vec<usize>>,
         lhs_num_exits: usize,
+        rhs_num_exits: usize,
         context: &RefCell<Context<'_>>,
     ) -> BddConnection {
-        if let Some(t) = context.borrow().get_bdd_pair_map_cache(lhs, rhs, reduce_matrix) {
+        if let Some(t) = context
+            .borrow()
+            .get_bdd_pair_map_cache(lhs, rhs, reduce_matrix)
+        {
             return t;
         }
         let mut leaf_map = std::collections::HashMap::new();
-        let mut return_map = vec![];
+        let mut return_map = Vec::with_capacity(lhs_num_exits * rhs_num_exits);
         let mut cache = std::collections::HashMap::new();
 
         let entry_point = Self::pair_map_recursive(
