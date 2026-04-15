@@ -195,6 +195,169 @@ impl<'grammar> GcflobddNode<'grammar> {
             }
         }
     }
+
+    pub fn mk_balanced_hadamard_voc12(
+        level: usize,
+        grammar: &'grammar Rc<GrammarNode>,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Rch<Self> {
+        if level == 2 {
+            return Self::mk_balanced_hadamard_voc12_2(grammar, context);
+        }
+
+        let GrammarNodeType::Internal(grammar_nodes) = &grammar.node else {
+            unreachable!("mk_hardamard_voc12 should have two groupings")
+        };
+        let [a, b] = &grammar_nodes[..] else {
+            unreachable!("mk_hardamard_voc12 should have two groupings")
+        };
+        let conn_a = Self::mk_balanced_hadamard_voc12(level - 1, a, context);
+        let conn_b = Self::mk_balanced_hadamard_voc12(level - 1, b, context);
+        let node_type = GcflobddNodeType::Internal(InternalNode {
+            connections: vec![
+                vec![Connection::new_sequential(conn_a, context)],
+                vec![
+                    Connection::new_sequential(conn_b.clone(), context),
+                    Connection::new(conn_b, vec![1, 0], context),
+                ],
+            ],
+        });
+        context.borrow_mut().add_gcflobdd_node(Self {
+            num_exits: 2,
+            grammar,
+            node: node_type,
+        })
+    }
+
+    pub fn mk_balanced_hadamard_voc13(
+        level: usize,
+        grammar: &'grammar Rc<GrammarNode>,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Rch<Self> {
+        if level == 2 {
+            return Self::mk_hadamard_voc13_2(grammar, context);
+        }
+
+        let GrammarNodeType::Internal(grammar_nodes) = &grammar.node else {
+            unreachable!("mk_hardamard_voc13 should have two groupings")
+        };
+        let [a, b] = &grammar_nodes[..] else {
+            unreachable!("mk_hardamard_voc13 should have two groupings")
+        };
+        let conn_a = Self::mk_balanced_hadamard_voc13(level - 1, a, context);
+        let conn_b = Self::mk_balanced_hadamard_voc13(level - 1, b, context);
+        let node_type = GcflobddNodeType::Internal(InternalNode {
+            connections: vec![
+                vec![Connection::new_sequential(conn_a, context)],
+                vec![
+                    Connection::new_sequential(conn_b.clone(), context),
+                    Connection::new(conn_b, vec![1, 0], context),
+                ],
+            ],
+        });
+        context.borrow_mut().add_gcflobdd_node(Self {
+            num_exits: 2,
+            grammar,
+            node: node_type,
+        })
+    }
+    fn mk_balanced_hadamard_voc12_2(
+        grammar: &'grammar Rc<GrammarNode>,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Rch<Self> {
+        let GrammarNodeType::Internal(grammar_nodes) = &grammar.node else {
+            unreachable!("mk_hardamard_voc12_2 should have 4 variables with two groupings")
+        };
+        let [a, b] = &grammar_nodes[..] else {
+            unreachable!("mk_hardamard_voc12_2 should have 4 variables with two groupings")
+        };
+        let a_conn = Self::mk_balanced_hadamard_2(a, context);
+        let b_conn = Self::mk_no_distinction(b, context);
+        let node_type = GcflobddNodeType::Internal(InternalNode {
+            connections: vec![
+                vec![Connection::new_sequential(a_conn, context)],
+                vec![
+                    Connection::new_sequential(b_conn.clone(), context),
+                    Connection::new_sequential(b_conn, context),
+                ],
+            ],
+        });
+        context.borrow_mut().add_gcflobdd_node(Self {
+            num_exits: 2,
+            grammar,
+            node: node_type,
+        })
+    }
+
+    fn mk_hadamard_voc13_2(
+        grammar: &'grammar Rc<GrammarNode>,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Rch<Self> {
+        let GrammarNodeType::Internal(grammar_nodes) = &grammar.node else {
+            unreachable!("mk_hardamard_voc12_2 should have 4 variables with two groupings")
+        };
+        let [a, b] = &grammar_nodes[..] else {
+            unreachable!("mk_hardamard_voc12_2 should have 4 variables with two groupings")
+        };
+        let a_conn = Self::mk_distinction(0, a, context);
+        let b0_conn = Self::mk_no_distinction(b, context);
+        let b1_conn = Self::mk_distinction(0, b, context);
+        let node_type = GcflobddNodeType::Internal(InternalNode {
+            connections: vec![
+                vec![Connection::new_sequential(a_conn, context)],
+                vec![
+                    Connection::new_sequential(b0_conn, context),
+                    Connection::new_sequential(b1_conn, context),
+                ],
+            ],
+        });
+        context.borrow_mut().add_gcflobdd_node(Self {
+            num_exits: 3,
+            grammar,
+            node: node_type,
+        })
+    }
+
+    fn mk_balanced_hadamard_2(
+        grammar: &'grammar Rc<GrammarNode>,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Rch<Self> {
+        let node_type = match &grammar.node {
+            GrammarNodeType::Internal(grammar_nodes) => {
+                let [a, b] = &grammar_nodes[..] else {
+                    unreachable!("mk_hadamard_2 should have two variables")
+                };
+                debug_assert!(
+                    matches!(a.node, GrammarNodeType::Terminal),
+                    "mk_hadamard_2 should have two variables"
+                );
+                debug_assert!(
+                    matches!(b.node, GrammarNodeType::Terminal),
+                    "mk_hadamard_2 should have two variables"
+                );
+                let a_conn = Self::mk_distinction(0, a, context);
+                let b0_conn = Self::mk_no_distinction(b, context);
+                let b1_conn = Self::mk_distinction(0, b, context);
+                GcflobddNodeType::Internal(InternalNode {
+                    connections: vec![
+                        vec![Connection::new_sequential(a_conn, context)],
+                        vec![
+                            Connection::new_sequential(b0_conn, context),
+                            Connection::new_sequential(b1_conn, context),
+                        ],
+                    ],
+                })
+            }
+            GrammarNodeType::Bdd(2) => GcflobddNodeType::Bdd(Bdd::mk_hadamard_2(context)),
+            _ => unreachable!("mk_hadamard_2 should have two variables"),
+        };
+        context.borrow_mut().add_gcflobdd_node(Self {
+            num_exits: 2,
+            grammar,
+            node: node_type,
+        })
+    }
+
     pub fn pair_product(
         lhs: &Rch<Self>,
         rhs: &Rch<Self>,

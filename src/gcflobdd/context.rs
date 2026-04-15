@@ -1,4 +1,5 @@
 use crate::gcflobdd::Gcflobdd;
+use crate::gcflobdd::GcflobddInt;
 use crate::gcflobdd::bdd::connection::{BddConnection, BddConnectionPair};
 use crate::gcflobdd::bdd::node::BddNode;
 use crate::gcflobdd::connection::{Connection, ConnectionPair};
@@ -26,15 +27,26 @@ impl ReductionCacheKey {
         Self(hash_1, hash_2)
     }
 }
-type Operation = usize;
-pub const OP_AND: Operation = 0usize;
-pub const OP_OR: Operation = 1usize;
-pub const OP_XOR: Operation = 2usize;
-pub const OP_NAND: Operation = 3usize;
-pub const OP_NOR: Operation = 4usize;
-pub const OP_XNOR: Operation = 5usize;
-pub const OP_IMPLIES: Operation = 6usize;
-const OP_END: Operation = 7usize;
+
+#[repr(usize)]
+pub enum BoolOperation {
+    And,
+    Or,
+    Xor,
+    Nand,
+    Nor,
+    Xnor,
+    Implies,
+    End,
+}
+
+#[repr(usize)]
+pub enum IntOperation {
+    Add,
+    Sub,
+    Mul,
+    End,
+}
 
 #[derive(Default)]
 pub struct Context<'grammar> {
@@ -54,7 +66,10 @@ pub struct Context<'grammar> {
     reduction_cache: HashMap<ReductionCacheKey, Rch<GcflobddNode<'grammar>>>,
     bdd_reduction_cache: HashMap<ReductionCacheKey, Rch<BddNode>>,
 
-    op_cache: [HashMap<(Gcflobdd<'grammar>, Gcflobdd<'grammar>), Gcflobdd<'grammar>>; OP_END],
+    op_cache: [HashMap<(Gcflobdd<'grammar>, Gcflobdd<'grammar>), Gcflobdd<'grammar>>;
+        BoolOperation::End as usize],
+    int_op_cache: [HashMap<(GcflobddInt<'grammar>, GcflobddInt<'grammar>), GcflobddInt<'grammar>>;
+        IntOperation::End as usize],
 }
 impl<'grammar> Context<'grammar> {
     pub fn new() -> RefCell<Self> {
@@ -239,14 +254,21 @@ impl<'grammar> Context<'grammar> {
         self.gcflobdd_node_table.get(&hash).cloned()
     }
 
-    pub(super) fn get_op_cache<const O: Operation>(
+    pub(super) fn get_op_cache<const O: usize>(
         &self,
         lhs: Gcflobdd<'grammar>,
         rhs: Gcflobdd<'grammar>,
     ) -> Option<Gcflobdd<'grammar>> {
         self.op_cache[O].get(&(lhs, rhs)).cloned()
     }
-    pub(super) fn set_op_cache<const O: Operation>(
+    pub(super) fn get_int_op_cache<const O: usize>(
+        &self,
+        lhs: GcflobddInt<'grammar>,
+        rhs: GcflobddInt<'grammar>,
+    ) -> Option<GcflobddInt<'grammar>> {
+        self.int_op_cache[O].get(&(lhs, rhs)).cloned()
+    }
+    pub(super) fn set_op_cache<const O: usize>(
         &mut self,
         lhs: Gcflobdd<'grammar>,
         rhs: Gcflobdd<'grammar>,
@@ -255,6 +277,14 @@ impl<'grammar> Context<'grammar> {
         self.op_cache[O].insert((lhs, rhs), node);
     }
 
+    pub(super) fn set_int_op_cache<const O: usize>(
+        &mut self,
+        lhs: GcflobddInt<'grammar>,
+        rhs: GcflobddInt<'grammar>,
+        node: GcflobddInt<'grammar>,
+    ) {
+        self.int_op_cache[O].insert((lhs, rhs), node);
+    }
     pub fn node_count(&self) -> usize {
         self.gcflobdd_node_table.len()
     }

@@ -24,6 +24,9 @@ impl Bdd {
     pub fn mk_projection(i: usize, context: &RefCell<Context<'_>>) -> Self {
         Self(BddNode::mk_distinction(i, context))
     }
+    pub fn mk_hadamard_2(context: &RefCell<Context<'_>>) -> Self {
+        Self(BddNode::mk_hadamard_2(context))
+    }
     #[cfg(test)]
     pub(super) fn mk_inverse_projection(i: usize, context: &RefCell<Context<'_>>) -> Self {
         Self(BddNode::mk_inverse_distinction(i, context))

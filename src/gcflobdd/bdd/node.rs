@@ -52,6 +52,25 @@ impl BddNode {
             }))
     }
 
+    pub fn mk_hadamard_2(context: &RefCell<Context<'_>>) -> Rch<Self> {
+        let zero_branch = Self::mk_terminal(0, context);
+        let one_branch = Self::mk_terminal(1, context);
+        let node_1 = context
+            .borrow_mut()
+            .add_bdd_node(Self::Internal(BddInternalNode {
+                var_id: 1,
+                zero_branch: zero_branch.clone(),
+                one_branch,
+            }));
+        context
+            .borrow_mut()
+            .add_bdd_node(Self::Internal(BddInternalNode {
+                var_id: 0,
+                zero_branch,
+                one_branch: node_1,
+            }))
+    }
+
     fn mk_terminal(i: usize, context: &RefCell<Context<'_>>) -> Rch<Self> {
         context.borrow_mut().add_bdd_node(Self::Terminal(i))
     }

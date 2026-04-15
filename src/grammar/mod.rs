@@ -21,7 +21,7 @@ impl Grammar {
         regex_is_match!(r#"^[A_Z][A-Za-z0-9_]*$"#, token)
     }
     fn valid_bdd(token: &str) -> Option<usize> {
-        regex_captures!(r#"^BDD\(([0-9]+)\)$"#, token).map(|(_, v)| v.parse().unwrap())
+        regex_captures!(r#"^BDD\(([1-9][0-9]+|[2-9])\)$"#, token).map(|(_, v)| v.parse().unwrap())
     }
     fn valid_terminal(token: &str) -> bool {
         token == "a"
@@ -122,6 +122,8 @@ mod tests {
     }
     #[test]
     fn test_valid_bdd() {
+        assert!(Grammar::valid_bdd("BDD(1)").is_none());
+        assert!(Grammar::valid_bdd("BDD(2)") == Some(2));
         assert!(Grammar::valid_bdd("BDD(123)") == Some(123));
         assert!(Grammar::valid_bdd("BDD(123a").is_none());
     }

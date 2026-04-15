@@ -1,18 +1,19 @@
 mod bdd;
+#[cfg(feature = "complex")]
+pub mod complex;
 mod connection;
 pub mod context;
 mod node;
 mod return_map;
 #[cfg(test)]
 mod tests;
+
 use std::cell::RefCell;
 use std::ops::Not;
 use std::rc::Rc;
 
 use crate::gcflobdd::connection::ConnectionPair;
-use crate::gcflobdd::context::{
-    Context, OP_AND, OP_IMPLIES, OP_NAND, OP_NOR, OP_OR, OP_XNOR, OP_XOR,
-};
+use crate::gcflobdd::context::{BoolOperation, Context, IntOperation};
 use crate::gcflobdd::node::GcflobddNode;
 use crate::gcflobdd::return_map::{complement, inverse_lookup};
 use crate::grammar::Grammar;
@@ -32,59 +33,92 @@ impl<'grammar, T: std::fmt::Debug> std::fmt::Debug for GcflobddT<'grammar, T> {
 
 pub type Gcflobdd<'grammar> = GcflobddT<'grammar, bool>;
 
-macro_rules! _define_op_new {
-    ($name:ident, $op_code:ident, $op:expr) => {
+macro_rules! _define_op {
+    ($name:ident, $pair_func:ident, $get_op_cache:ident, $set_op_cache:ident, $op_type: ident, $val_type:ident, $op_code:ident, $lhs:ident, $rhs:ident, $op:expr) => {
         pub fn $name(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
             if let Some(ans) = context
                 .borrow()
-                .get_op_cache::<$op_code>(self.clone(), rhs.clone())
+                .$get_op_cache::<{ $op_type::$op_code as usize }>(self.clone(), rhs.clone())
             {
                 return ans;
             }
-            let ans = self.mk_op_pair_map(rhs, $op, context);
+            let ans = self.$pair_func(
+                rhs,
+                |&$lhs: &$val_type, &$rhs: &$val_type| -> $val_type { $op },
+                context,
+            );
             context
                 .borrow_mut()
-                .set_op_cache::<$op_code>(self.clone(), rhs.clone(), ans.clone());
+                .$set_op_cache::<{ $op_type::$op_code as usize }>(
+                    self.clone(),
+                    rhs.clone(),
+                    ans.clone(),
+                );
             ans
         }
     };
 }
-macro_rules! _define_op_legacy {
-    ($name:ident, $op_code:ident, $op:expr) => {
-        pub fn $name(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
-            if let Some(ans) = context
-                .borrow()
-                .get_op_cache::<$op_code>(self.clone(), rhs.clone())
-            {
-                return ans;
-            }
-            let ans = self.mk_op(rhs, $op, context);
-            context
-                .borrow_mut()
-                .set_op_cache::<$op_code>(self.clone(), rhs.clone(), ans.clone());
-            ans
-        }
-    };
-}
-macro_rules! define_op_comparison {
-    ($name: ident, $name_new:ident, $name_legacy:ident, $op_code:ident, $op:expr) => {
+macro_rules! define_bool_op {
+    ($name:ident, $op_code:ident, $lhs:ident, $rhs:ident, $op:expr) => {
         #[cfg(not(feature = "separate_reduce_map"))]
-        _define_op_new!($name, $op_code, $op);
+        _define_op!(
+            $name,
+            mk_op_pair_map,
+            get_op_cache,
+            set_op_cache,
+            BoolOperation,
+            bool,
+            $op_code,
+            $lhs,
+            $rhs,
+            $op
+        );
         #[cfg(feature = "separate_reduce_map")]
-        _define_op_legacy!($name, $op_code, $op);
-        // pub fn $name(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
-        //     let a = self.$name_new(rhs, context);
-        //     let b = self.$name_legacy(rhs, context);
-        //     println!("{:?}", a);
-        //     println!("{:?}", b);
-        //     println!("{}", $op_code);
-        //     if a != b {
-        //         panic!("$name_new and $name_legacy do not agree on $op_code");
-        //     }
-        //     b
-        // }
+        _define_op!(
+            $name,
+            mk_op,
+            get_op_cache,
+            set_op_cache,
+            BoolOperation,
+            bool,
+            $op_code,
+            $lhs,
+            $rhs,
+            $op
+        );
     };
 }
+macro_rules! define_int_op {
+    ($name:ident, $op_code:ident, $lhs:ident, $rhs:ident, $op:expr) => {
+        #[cfg(not(feature = "separate_reduce_map"))]
+        _define_op!(
+            $name,
+            mk_op_pair_map,
+            get_int_op_cache,
+            set_int_op_cache,
+            IntOperation,
+            i32,
+            $op_code,
+            $lhs,
+            $rhs,
+            $op
+        );
+        #[cfg(feature = "separate_reduce_map")]
+        _define_op!(
+            $name,
+            mk_op,
+            get_int_op_cache,
+            set_int_op_cache,
+            IntOperation,
+            i32,
+            $op_code,
+            $lhs,
+            $rhs,
+            $op
+        );
+    };
+}
+
 impl<'grammar> Gcflobdd<'grammar> {
     fn new(
         connection: ConnectionT<'grammar, ReturnMapT<bool>>,
@@ -139,47 +173,68 @@ impl<'grammar> Gcflobdd<'grammar> {
         }
     }
 
-    define_op_comparison!(mk_and, mk_and_new, mk_and_legacy, OP_AND, |a: &bool,
-                                                                      b: &bool|
-     -> bool {
-        *a && *b
-    });
-    define_op_comparison!(mk_or, mk_or_new, mk_or_legacy, OP_OR, |a: &bool,
-                                                                  b: &bool|
-     -> bool {
-        *a || *b
-    });
-    define_op_comparison!(mk_xor, mk_xor_new, mk_xor_legacy, OP_XOR, |a: &bool,
-                                                                      b: &bool|
-     -> bool {
-        *a ^ *b
-    });
-    define_op_comparison!(mk_nand, mk_nand_new, mk_nand_legacy, OP_NAND, |a: &bool,
-                                                                          b: &bool|
-     -> bool {
-        !(*a && *b)
-    });
-    define_op_comparison!(mk_nor, mk_nor_new, mk_nor_legacy, OP_NOR, |a: &bool,
-                                                                      b: &bool|
-     -> bool {
-        !(*a || *b)
-    });
-    define_op_comparison!(mk_xnor, mk_xnor_new, mk_xnor_legacy, OP_XNOR, |a: &bool,
-                                                                          b: &bool|
-     -> bool {
-        !(*a ^ *b)
-    });
-    define_op_comparison!(
-        mk_implies,
-        mk_implies_new,
-        mk_implies_legacy,
-        OP_IMPLIES,
-        |a: &bool, b: &bool| -> bool { !(*a) || *b }
-    );
+    define_bool_op!(mk_and, And, a, b, a && b);
+    define_bool_op!(mk_or, Or, a, b, a || b);
+    define_bool_op!(mk_xor, Xor, a, b, a ^ b);
+    define_bool_op!(mk_nand, Nand, a, b, !(a && b));
+    define_bool_op!(mk_nor, Nor, a, b, !(a || b));
+    define_bool_op!(mk_xnor, Xnor, a, b, !(a ^ b));
+    define_bool_op!(mk_implies, Implies, a, b, !a || b);
 
     pub fn find_one_satisfiable_assignment(&self) -> Option<Vec<Option<bool>>> {
         self.find_one_path_to(&true)
     }
+}
+
+impl Not for Gcflobdd<'_> {
+    type Output = Self;
+    #[inline]
+    fn not(self) -> Self {
+        self.mk_not()
+    }
+}
+
+pub type GcflobddInt<'grammar> = GcflobddT<'grammar, i32>;
+
+impl<'grammar> GcflobddInt<'grammar> {
+    pub fn mk_hadamard_voc12(
+        level: usize,
+        grammar: &'grammar Grammar,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Self {
+        Self {
+            connection: ConnectionT {
+                entry_point: GcflobddNode::mk_balanced_hadamard_voc12(
+                    level,
+                    &grammar.root,
+                    context,
+                ),
+                return_map: vec![1, -1],
+            },
+            grammar,
+        }
+    }
+    pub fn mk_hadamard_voc13(
+        level: usize,
+        grammar: &'grammar Grammar,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Self {
+        Self {
+            connection: ConnectionT {
+                entry_point: GcflobddNode::mk_balanced_hadamard_voc13(
+                    level,
+                    &grammar.root,
+                    context,
+                ),
+                return_map: vec![1, -1],
+            },
+            grammar,
+        }
+    }
+
+    define_int_op!(mk_add, Add, a, b, a + b);
+    define_int_op!(mk_sub, Sub, a, b, a - b);
+    define_int_op!(mk_mul, Mul, a, b, a * b);
 }
 
 impl<'grammar, T: Eq> GcflobddT<'grammar, T> {
@@ -318,14 +373,6 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
             },
             grammar: self.grammar,
         }
-    }
-}
-
-impl Not for Gcflobdd<'_> {
-    type Output = Self;
-    #[inline]
-    fn not(self) -> Self {
-        self.mk_not()
     }
 }
 

@@ -3,16 +3,21 @@ name = "gcflobdd"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
 [dependencies]
 lazy-regex = "3.6.0"
 parking_lot = { version = "0.12.5", optional = true }
+rug = { version = "1.29.0", optional = true }
 rustc-hash = { version = "2.1.2", optional = true }
 
 [features]
-default = ["fx-hash"]
+default = ["fx-hash", "complex"]
 sync = ["dep:parking_lot"]
 separate_reduce_map = []
 fx-hash = ["dep:rustc-hash"]
+complex = ["dep:rug"]
 
 [[test]]
 name = "n_queens"
