@@ -111,6 +111,20 @@ fn test_op() {
 }
 
 #[test]
+fn test_xor() {
+    for grammar in grammar_choice!() {
+        let context = RefCell::new(Context::default());
+        let c1 = Gcflobdd::mk_projection(0, &grammar, &context);
+        let c2 = Gcflobdd::mk_projection(1, &grammar, &context);
+        let c3 = c1.mk_xor(&c2, &context);
+        drop(c1);
+        drop(c2);
+        context.borrow_mut().gc();
+        let path = c3.find_one_satisfiable_assignment().unwrap();
+        assert_eq!(path, vec![Some(false), Some(true), None, None]);
+    }
+}
+#[test]
 fn test_node_table() {
     for grammar in grammar_choice!() {
         let context = RefCell::new(Context::default());

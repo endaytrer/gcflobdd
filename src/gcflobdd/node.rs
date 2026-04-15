@@ -643,6 +643,7 @@ impl<'grammar> GcflobddNode<'grammar> {
         }
         // is identity map. This is guaranteed by the generation process.
         if num_exits == reduce_map.len() {
+            debug_assert!(reduce_map.iter().enumerate().all(|(i, x)| *x == i));
             return this.clone();
         }
 
