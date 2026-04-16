@@ -5,11 +5,26 @@ use crate::{
     utils::hash_cache::Rch,
 };
 
-#[derive(Clone, Hash)]
+#[derive(Clone)]
 pub(super) struct ConnectionT<'grammar, Handle> {
     pub entry_point: Rch<GcflobddNode<'grammar>>,
     pub return_map: Handle,
 }
+
+impl<'grammar, Handle: std::hash::Hash> std::hash::Hash for ConnectionT<'grammar, Handle> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.entry_point.hash(state);
+        self.return_map.hash(state);
+    }
+}
+
+impl<'grammar, Handle: PartialEq> PartialEq for ConnectionT<'grammar, Handle> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::as_ptr(&self.entry_point) == Rc::as_ptr(&other.entry_point)
+            && self.return_map == other.return_map
+    }
+}
+impl<'grammar, Handle: Eq> Eq for ConnectionT<'grammar, Handle> {}
 
 impl<'grammar, T: std::fmt::Debug> std::fmt::Debug for ConnectionT<'grammar, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -55,11 +70,3 @@ impl<'grammar> ConnectionPair<'grammar> {
         }
     }
 }
-
-impl PartialEq for Connection<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::as_ptr(&self.entry_point) == Rc::as_ptr(&other.entry_point)
-            && Rc::as_ptr(&self.return_map) == Rc::as_ptr(&other.return_map)
-    }
-}
-impl Eq for Connection<'_> {}

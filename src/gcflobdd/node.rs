@@ -80,7 +80,7 @@ impl std::ops::Index<usize> for ReduceMap {
     }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub(super) enum GcflobddNodeType<'grammar> {
     DontCare,
     Fork,
@@ -88,6 +88,7 @@ pub(super) enum GcflobddNodeType<'grammar> {
     Bdd(Bdd),
 }
 
+#[derive(PartialEq, Eq)]
 pub(super) struct InternalNode<'grammar> {
     pub(super) connections: Vec<Vec<Connection<'grammar>>>,
 }
@@ -949,3 +950,12 @@ impl<'grammar> InternalNode<'grammar> {
         None
     }
 }
+
+impl<'grammar> PartialEq for GcflobddNode<'grammar> {
+    fn eq(&self, other: &Self) -> bool {
+        self.num_exits == other.num_exits
+            && Rc::ptr_eq(self.grammar, other.grammar)
+            && self.node == other.node
+    }
+}
+impl<'grammar> Eq for GcflobddNode<'grammar> {}

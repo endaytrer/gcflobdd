@@ -11,9 +11,12 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 #[cfg(feature = "fx-hash")]
-use rustc_hash::{FxHashMap as HashMap, FxHasher as DefaultHasher};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet, FxHasher as DefaultHasher};
 #[cfg(not(feature = "fx-hash"))]
-use std::{collections::HashMap, hash::DefaultHasher};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::DefaultHasher,
+};
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct ReductionCacheKey(u64, u64);
@@ -51,11 +54,11 @@ pub enum IntOperation {
 #[derive(Default)]
 pub struct Context<'grammar> {
     // Node tables
-    gcflobdd_node_table: HashMap<u64, Rch<GcflobddNode<'grammar>>>,
-    bdd_node_table: HashMap<u64, Rch<BddNode>>,
+    gcflobdd_node_table: HashSet<Rch<GcflobddNode<'grammar>>>,
+    bdd_node_table: HashSet<Rch<BddNode>>,
 
-    return_map_table: HashMap<u64, Rch<ReturnMap>>,
-    reduce_matrix_table: HashMap<u64, Rch<Vec<usize>>>,
+    return_map_table: HashSet<Rch<ReturnMap>>,
+    reduce_matrix_table: HashSet<Rch<Vec<usize>>>,
 
     // caches
     pair_product_cache: HashMap<(u64, u64), ConnectionPair<'grammar>>,
@@ -82,37 +85,49 @@ impl<'grammar> Context<'grammar> {
         let mut hasher = DefaultHasher::default();
         node.hash(&mut hasher);
         let hash = hasher.finish();
-        self.gcflobdd_node_table
-            .entry(hash)
-            .or_insert(Rc::new(HashCached::with_hash(node, hash)))
-            .clone()
+        let hc_node = HashCached::with_hash(node, hash);
+        if let Some(rch) = self.gcflobdd_node_table.get(&hc_node) {
+            return rch.clone();
+        }
+        let rch = Rc::new(hc_node);
+        self.gcflobdd_node_table.insert(rch.clone());
+        rch
     }
     pub(super) fn add_bdd_node(&mut self, node: BddNode) -> Rch<BddNode> {
         let mut hasher = DefaultHasher::default();
         node.hash(&mut hasher);
         let hash = hasher.finish();
-        self.bdd_node_table
-            .entry(hash)
-            .or_insert(Rc::new(HashCached::with_hash(node, hash)))
-            .clone()
+        let hc_node = HashCached::with_hash(node, hash);
+        if let Some(rch) = self.bdd_node_table.get(&hc_node) {
+            return rch.clone();
+        }
+        let rch = Rc::new(hc_node);
+        self.bdd_node_table.insert(rch.clone());
+        rch
     }
     pub(super) fn add_return_map(&mut self, return_map: ReturnMap) -> Rch<ReturnMap> {
         let mut hasher = DefaultHasher::default();
         return_map.hash(&mut hasher);
         let hash = hasher.finish();
-        self.return_map_table
-            .entry(hash)
-            .or_insert(Rc::new(HashCached::with_hash(return_map, hash)))
-            .clone()
+        let hc_node = HashCached::with_hash(return_map, hash);
+        if let Some(rch) = self.return_map_table.get(&hc_node) {
+            return rch.clone();
+        }
+        let rch = Rc::new(hc_node);
+        self.return_map_table.insert(rch.clone());
+        rch
     }
     pub(super) fn add_reduce_matrix(&mut self, op_matrix: Vec<usize>) -> Rch<Vec<usize>> {
         let mut hasher = DefaultHasher::default();
         op_matrix.hash(&mut hasher);
         let hash = hasher.finish();
-        self.reduce_matrix_table
-            .entry(hash)
-            .or_insert(Rc::new(HashCached::with_hash(op_matrix, hash)))
-            .clone()
+        let hc_node = HashCached::with_hash(op_matrix, hash);
+        if let Some(rch) = self.reduce_matrix_table.get(&hc_node) {
+            return rch.clone();
+        }
+        let rch = Rc::new(hc_node);
+        self.reduce_matrix_table.insert(rch.clone());
+        rch
     }
     pub(super) fn get_pair_product_cache(
         &self,
@@ -250,8 +265,7 @@ impl<'grammar> Context<'grammar> {
         &mut self,
         node: &Rch<GcflobddNode<'grammar>>,
     ) -> Option<Rch<GcflobddNode<'grammar>>> {
-        let hash = node.hash_code();
-        self.gcflobdd_node_table.get(&hash).cloned()
+        self.gcflobdd_node_table.get(node.as_ref()).cloned()
     }
 
     pub(super) fn get_op_cache<const O: usize>(
@@ -321,65 +335,62 @@ impl<'grammar> Context<'grammar> {
         total_size
     }
 
-    fn gcflobdd_node_table_gc(node_table: &mut HashMap<u64, Rch<GcflobddNode<'grammar>>>) {
+    fn gcflobdd_node_table_gc(node_table: &mut HashSet<Rch<GcflobddNode<'grammar>>>) {
         let mut to_remove = Vec::new();
-        for (k, v) in node_table.iter() {
+        for v in node_table.iter() {
             if Rc::strong_count(v) == 1 {
-                to_remove.push(*k);
+                to_remove.push(v.clone());
             }
         }
 
-        while let Some(k) = to_remove.pop() {
-            let v = node_table.remove(&k).unwrap();
+        while let Some(v) = to_remove.pop() {
+            if !node_table.remove(&*v) {
+                continue;
+            }
             let node = Rc::try_unwrap(v).unwrap();
-            let mut children_hashes = Vec::new();
+            let mut children = Vec::new();
             if let crate::gcflobdd::node::GcflobddNodeType::Internal(internal) = &node.node {
                 for layer in &internal.connections {
                     for conn in layer {
-                        children_hashes.push(conn.entry_point.hash_code());
+                        children.push(conn.entry_point.clone());
                     }
                 }
             }
-            children_hashes.sort_unstable();
-            children_hashes.dedup();
 
             drop(node);
 
-            for child_hash in children_hashes {
-                if let Some(child) = node_table.get(&child_hash)
-                    && Rc::strong_count(child) == 1
-                {
-                    to_remove.push(child_hash);
+            for child in children {
+                if node_table.contains(&*child) && Rc::strong_count(&child) == 2 {
+                    to_remove.push(child);
                 }
             }
         }
     }
-    fn bdd_node_table_gc(node_table: &mut HashMap<u64, Rch<BddNode>>) {
+
+    fn bdd_node_table_gc(node_table: &mut HashSet<Rch<BddNode>>) {
         let mut to_remove = Vec::new();
-        for (k, v) in node_table.iter() {
+        for v in node_table.iter() {
             if Rc::strong_count(v) == 1 {
-                to_remove.push(*k);
+                to_remove.push(v.clone());
             }
         }
 
-        while let Some(k) = to_remove.pop() {
-            let v = node_table.remove(&k).unwrap();
+        while let Some(v) = to_remove.pop() {
+            if !node_table.remove(&*v) {
+                continue;
+            }
             let node = Rc::try_unwrap(v).unwrap();
-            let mut children_hashes = Vec::new();
+            let mut children = Vec::new();
             if let BddNode::Internal(internal) = &*node {
-                let zero_hash = internal.zero_branch.hash_code();
-                let one_hash = internal.one_branch.hash_code();
-                children_hashes.push(zero_hash);
-                children_hashes.push(one_hash);
+                children.push(internal.zero_branch.clone());
+                children.push(internal.one_branch.clone());
             }
 
             drop(node);
 
-            for child_hash in children_hashes {
-                if let Some(child) = node_table.get(&child_hash)
-                    && Rc::strong_count(child) == 1
-                {
-                    to_remove.push(child_hash);
+            for child in children {
+                if node_table.contains(&*child) && Rc::strong_count(&child) == 2 {
+                    to_remove.push(child);
                 }
             }
         }
@@ -400,21 +411,26 @@ impl<'grammar> Context<'grammar> {
         self.return_map_table = self
             .return_map_table
             .drain()
-            .filter(|(_, v)| Rc::strong_count(v) > 1)
+            .filter(|v| Rc::strong_count(v) > 1)
             .collect();
         self.reduce_matrix_table = self
             .reduce_matrix_table
             .drain()
-            .filter(|(_, v)| Rc::strong_count(v) > 1)
+            .filter(|v| Rc::strong_count(v) > 1)
             .collect();
     }
 }
 impl<'grammar> std::fmt::Debug for Context<'grammar> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Context");
-        for (k, v) in &self.gcflobdd_node_table {
+        for v in &self.gcflobdd_node_table {
             s.field(
-                format!("[#{:016x?} @ 0x{:016x}]", k, Rc::as_ptr(v) as usize).as_str(),
+                format!(
+                    "[#{:016x?} @ 0x{:016x}]",
+                    v.hash_code(),
+                    Rc::as_ptr(v) as usize
+                )
+                .as_str(),
                 v,
             );
         }

@@ -14,13 +14,13 @@ use rustc_hash::FxHashMap as HashMap;
 #[cfg(not(feature = "fx-hash"))]
 use std::collections::HashMap;
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub enum BddNode {
     Internal(BddInternalNode),
     Terminal(usize),
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct BddInternalNode {
     var_id: usize,
     pub(crate) zero_branch: Rch<BddNode>,
