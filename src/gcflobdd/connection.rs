@@ -1,13 +1,21 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::RefCell,
+    rc::{Rc, Weak},
+};
 
 use crate::{
     gcflobdd::{ReturnMapT, context::Context, node::GcflobddNode, return_map::ReturnMap},
-    utils::hash_cache::Rch,
+    utils::hash_cache::{Rch, Weakh},
 };
 
 #[derive(Clone)]
 pub(super) struct ConnectionT<'grammar, Handle> {
     pub entry_point: Rch<GcflobddNode<'grammar>>,
+    pub return_map: Handle,
+}
+
+pub(super) struct WeakConnectionT<'grammar, Handle> {
+    pub entry_point: Weakh<GcflobddNode<'grammar>>,
     pub return_map: Handle,
 }
 
@@ -36,7 +44,12 @@ impl<'grammar, T: std::fmt::Debug> std::fmt::Debug for ConnectionT<'grammar, T> 
 }
 
 pub(crate) type Connection<'grammar> = ConnectionT<'grammar, Rch<ReturnMap>>;
+/// The return map should be strongly refrenced.
+/// It keeps the return-map cleaning (strong count == 1) work.
+pub(crate) type WeakConnection<'grammar> = WeakConnectionT<'grammar, Rch<ReturnMap>>;
 pub(crate) type ConnectionPair<'grammar> = ConnectionT<'grammar, ReturnMapT<(usize, usize)>>;
+pub(crate) type WeakConnectionPair<'grammar> =
+    WeakConnectionT<'grammar, ReturnMapT<(usize, usize)>>;
 
 impl<'grammar> Connection<'grammar> {
     pub fn new_sequential(
@@ -68,5 +81,22 @@ impl<'grammar> ConnectionPair<'grammar> {
             entry_point: self.entry_point.clone(),
             return_map: self.return_map.iter().map(|(i, j)| (*j, *i)).collect(),
         }
+    }
+}
+
+impl<'grammar, Handle> ConnectionT<'grammar, Handle> {
+    pub fn into_weak(self) -> WeakConnectionT<'grammar, Handle> {
+        WeakConnectionT {
+            entry_point: Rc::downgrade(&self.entry_point),
+            return_map: self.return_map,
+        }
+    }
+}
+impl<'grammar, Handle: Clone> WeakConnectionT<'grammar, Handle> {
+    pub fn upgrade(&self) -> Option<ConnectionT<'grammar, Handle>> {
+        Some(ConnectionT {
+            entry_point: Weak::upgrade(&self.entry_point)?,
+            return_map: self.return_map.clone(),
+        })
     }
 }

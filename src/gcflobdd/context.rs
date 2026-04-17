@@ -1,14 +1,21 @@
 use crate::gcflobdd::Gcflobdd;
 use crate::gcflobdd::GcflobddInt;
+use crate::gcflobdd::bdd::connection::WeakBddConnection;
+use crate::gcflobdd::bdd::connection::WeakBddConnectionPair;
 use crate::gcflobdd::bdd::connection::{BddConnection, BddConnectionPair};
 use crate::gcflobdd::bdd::node::BddNode;
+use crate::gcflobdd::connection::WeakConnection;
+use crate::gcflobdd::connection::WeakConnectionPair;
 use crate::gcflobdd::connection::{Connection, ConnectionPair};
 use crate::gcflobdd::node::GcflobddNode;
 use crate::gcflobdd::return_map::ReturnMap;
+use crate::utils::hash_cache::WeakKey;
+use crate::utils::hash_cache::Weakh;
 use crate::utils::hash_cache::{HashCached, Rch};
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+use std::rc::Weak;
 
 #[cfg(feature = "fx-hash")]
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet, FxHasher as DefaultHasher};
@@ -17,15 +24,6 @@ use std::{
     collections::{HashMap, HashSet},
     hash::DefaultHasher,
 };
-
-#[derive(Clone, Hash, PartialEq, Eq)]
-struct ReductionCacheKey(usize, Vec<usize>);
-
-impl ReductionCacheKey {
-    fn new<T: Hash>(node: &Rch<T>, reduction_map: &[usize]) -> Self {
-        Self(Rc::as_ptr(node) as usize, reduction_map.to_vec())
-    }
-}
 
 #[repr(usize)]
 pub enum BoolOperation {
@@ -47,6 +45,26 @@ pub enum IntOperation {
     End,
 }
 
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct ReductionCacheKey<T: Hash>(WeakKey<T>, Vec<usize>);
+
+impl<T: Hash> ReductionCacheKey<T> {
+    fn new(node: &Rch<T>, reduction_map: &[usize]) -> Self {
+        Self(node.into(), reduction_map.to_vec())
+    }
+}
+
+type PairProductCacheKey<'grammar> = (
+    WeakKey<GcflobddNode<'grammar>>,
+    WeakKey<GcflobddNode<'grammar>>,
+);
+type BddPairProductCacheKey<'grammar> = (WeakKey<BddNode>, WeakKey<BddNode>);
+type PairMapCacheKey<'grammar> = (
+    WeakKey<GcflobddNode<'grammar>>,
+    WeakKey<GcflobddNode<'grammar>>,
+    WeakKey<Vec<usize>>,
+);
+type BddPairMapCacheKey<'grammar> = (WeakKey<BddNode>, WeakKey<BddNode>, WeakKey<Vec<usize>>);
 #[derive(Default)]
 pub struct Context<'grammar> {
     // Node tables
@@ -57,13 +75,14 @@ pub struct Context<'grammar> {
     reduce_matrix_table: HashSet<Rch<Vec<usize>>>,
 
     // caches
-    pair_product_cache: HashMap<(usize, usize), ConnectionPair<'grammar>>,
-    bdd_pair_product_cache: HashMap<(usize, usize), BddConnectionPair>,
+    pair_product_cache: HashMap<PairProductCacheKey<'grammar>, WeakConnectionPair<'grammar>>,
+    bdd_pair_product_cache: HashMap<BddPairProductCacheKey<'grammar>, WeakBddConnectionPair>,
     /// (lhs, rhs, op_matrix) -> Connection
-    pair_map_cache: HashMap<(usize, usize, usize), Connection<'grammar>>,
-    bdd_pair_map_cache: HashMap<(usize, usize, usize), BddConnection>,
-    reduction_cache: HashMap<ReductionCacheKey, Rch<GcflobddNode<'grammar>>>,
-    bdd_reduction_cache: HashMap<ReductionCacheKey, Rch<BddNode>>,
+    pair_map_cache: HashMap<PairMapCacheKey<'grammar>, WeakConnection<'grammar>>,
+    bdd_pair_map_cache: HashMap<BddPairMapCacheKey<'grammar>, WeakBddConnection>,
+    reduction_cache:
+        HashMap<ReductionCacheKey<GcflobddNode<'grammar>>, Weakh<GcflobddNode<'grammar>>>,
+    bdd_reduction_cache: HashMap<ReductionCacheKey<BddNode>, Weakh<BddNode>>,
 
     op_cache: [HashMap<(Gcflobdd<'grammar>, Gcflobdd<'grammar>), Gcflobdd<'grammar>>;
         BoolOperation::End as usize],
@@ -127,16 +146,16 @@ impl<'grammar> Context<'grammar> {
     }
     pub(super) fn get_pair_product_cache(
         &self,
-        n1: &Rch<GcflobddNode>,
-        n2: &Rch<GcflobddNode>,
+        n1: &Rch<GcflobddNode<'grammar>>,
+        n2: &Rch<GcflobddNode<'grammar>>,
     ) -> Option<ConnectionPair<'grammar>> {
-        let hash1 = Rc::as_ptr(n1) as usize;
-        let hash2 = Rc::as_ptr(n2) as usize;
-        if let Some(t) = self.pair_product_cache.get(&(hash1, hash2)).cloned() {
-            return Some(t);
+        let key1: WeakKey<_> = n1.into();
+        let key2: WeakKey<_> = n2.into();
+        if let Some(t) = self.pair_product_cache.get(&(key1.clone(), key2.clone())) {
+            return Some(t.upgrade().unwrap());
         }
-        if let Some(t) = self.pair_product_cache.get(&(hash2, hash1)) {
-            return Some(t.flipped());
+        if let Some(t) = self.pair_product_cache.get(&(key2, key1)) {
+            return Some(t.upgrade().unwrap().flipped());
         }
         None
     }
@@ -145,13 +164,16 @@ impl<'grammar> Context<'grammar> {
         n1: &Rch<BddNode>,
         n2: &Rch<BddNode>,
     ) -> Option<BddConnectionPair> {
-        let hash1 = Rc::as_ptr(n1) as usize;
-        let hash2 = Rc::as_ptr(n2) as usize;
-        if let Some(t) = self.bdd_pair_product_cache.get(&(hash1, hash2)).cloned() {
-            return Some(t);
+        let key1: WeakKey<_> = n1.into();
+        let key2: WeakKey<_> = n2.into();
+        if let Some(t) = self
+            .bdd_pair_product_cache
+            .get(&(key1.clone(), key2.clone()))
+        {
+            return Some(t.upgrade().unwrap());
         }
-        if let Some(t) = self.bdd_pair_product_cache.get(&(hash2, hash1)) {
-            return Some(t.flipped());
+        if let Some(t) = self.bdd_pair_product_cache.get(&(key2, key1)) {
+            return Some(t.upgrade().unwrap().flipped());
         }
         None
     }
@@ -161,10 +183,12 @@ impl<'grammar> Context<'grammar> {
         n2: &Rch<GcflobddNode>,
         op_matrix: &Rch<Vec<usize>>,
     ) -> Option<Connection<'grammar>> {
-        let hash1 = Rc::as_ptr(n1) as usize;
-        let hash2 = Rc::as_ptr(n2) as usize;
-        let hash3 = Rc::as_ptr(op_matrix) as usize;
-        self.pair_map_cache.get(&(hash1, hash2, hash3)).cloned()
+        let key1: WeakKey<_> = n1.into();
+        let key2: WeakKey<_> = n2.into();
+        let key3: WeakKey<_> = op_matrix.into();
+        self.pair_map_cache
+            .get(&(key1, key2, key3))
+            .map(|t| t.upgrade().unwrap())
     }
     pub(super) fn get_bdd_pair_map_cache(
         &self,
@@ -172,10 +196,12 @@ impl<'grammar> Context<'grammar> {
         n2: &Rch<BddNode>,
         op_matrix: &Rch<Vec<usize>>,
     ) -> Option<BddConnection> {
-        let hash1 = Rc::as_ptr(n1) as usize;
-        let hash2 = Rc::as_ptr(n2) as usize;
-        let hash3 = Rc::as_ptr(op_matrix) as usize;
-        self.bdd_pair_map_cache.get(&(hash1, hash2, hash3)).cloned()
+        let key1: WeakKey<_> = n1.into();
+        let key2: WeakKey<_> = n2.into();
+        let key3: WeakKey<_> = op_matrix.into();
+        self.bdd_pair_map_cache
+            .get(&(key1, key2, key3))
+            .map(|t| t.upgrade().unwrap())
     }
     pub(super) fn get_reduction_cache(
         &self,
@@ -183,7 +209,9 @@ impl<'grammar> Context<'grammar> {
         indices: &[usize],
     ) -> Option<Rch<GcflobddNode<'grammar>>> {
         let key = ReductionCacheKey::new(n, indices);
-        self.reduction_cache.get(&key).cloned()
+        self.reduction_cache
+            .get(&key)
+            .map(|t| Weak::upgrade(t).unwrap())
     }
     pub(super) fn get_bdd_reduction_cache(
         &self,
@@ -191,17 +219,20 @@ impl<'grammar> Context<'grammar> {
         indices: &[usize],
     ) -> Option<Rch<BddNode>> {
         let key = ReductionCacheKey::new(n, indices);
-        self.bdd_reduction_cache.get(&key).cloned()
+        self.bdd_reduction_cache
+            .get(&key)
+            .map(|t| Weak::upgrade(t).unwrap())
     }
     pub(super) fn set_pair_product_cache(
         &mut self,
-        n1: &Rch<GcflobddNode>,
-        n2: &Rch<GcflobddNode>,
+        n1: &Rch<GcflobddNode<'grammar>>,
+        n2: &Rch<GcflobddNode<'grammar>>,
         conn: ConnectionPair<'grammar>,
     ) {
-        let hash1 = Rc::as_ptr(n1) as usize;
-        let hash2 = Rc::as_ptr(n2) as usize;
-        self.pair_product_cache.insert((hash1, hash2), conn);
+        let key1: WeakKey<_> = n1.into();
+        let key2: WeakKey<_> = n2.into();
+        self.pair_product_cache
+            .insert((key1, key2), conn.into_weak());
     }
     pub(super) fn set_bdd_pair_product_cache(
         &mut self,
@@ -209,21 +240,23 @@ impl<'grammar> Context<'grammar> {
         n2: &Rch<BddNode>,
         conn: BddConnectionPair,
     ) {
-        let hash1 = Rc::as_ptr(n1) as usize;
-        let hash2 = Rc::as_ptr(n2) as usize;
-        self.bdd_pair_product_cache.insert((hash1, hash2), conn);
+        let key1: WeakKey<_> = n1.into();
+        let key2: WeakKey<_> = n2.into();
+        self.bdd_pair_product_cache
+            .insert((key1, key2), conn.into_weak());
     }
     pub(super) fn set_pair_map_cache(
         &mut self,
-        n1: &Rch<GcflobddNode>,
-        n2: &Rch<GcflobddNode>,
+        n1: &Rch<GcflobddNode<'grammar>>,
+        n2: &Rch<GcflobddNode<'grammar>>,
         op_matrix: &Rch<Vec<usize>>,
         conn: Connection<'grammar>,
     ) {
-        let hash1 = Rc::as_ptr(n1) as usize;
-        let hash2 = Rc::as_ptr(n2) as usize;
-        let hash3 = Rc::as_ptr(op_matrix) as usize;
-        self.pair_map_cache.insert((hash1, hash2, hash3), conn);
+        let key1: WeakKey<_> = n1.into();
+        let key2: WeakKey<_> = n2.into();
+        let key3: WeakKey<_> = op_matrix.into();
+        self.pair_map_cache
+            .insert((key1, key2, key3), conn.into_weak());
     }
     pub(super) fn set_bdd_pair_map_cache(
         &mut self,
@@ -232,19 +265,20 @@ impl<'grammar> Context<'grammar> {
         op_matrix: &Rch<Vec<usize>>,
         conn: BddConnection,
     ) {
-        let hash1 = Rc::as_ptr(n1) as usize;
-        let hash2 = Rc::as_ptr(n2) as usize;
-        let hash3 = Rc::as_ptr(op_matrix) as usize;
-        self.bdd_pair_map_cache.insert((hash1, hash2, hash3), conn);
+        let key1: WeakKey<_> = n1.into();
+        let key2: WeakKey<_> = n2.into();
+        let key3: WeakKey<_> = op_matrix.into();
+        self.bdd_pair_map_cache
+            .insert((key1, key2, key3), conn.into_weak());
     }
     pub(super) fn set_reduction_cache(
         &mut self,
-        n: &Rch<GcflobddNode>,
+        n: &Rch<GcflobddNode<'grammar>>,
         indices: &[usize],
         node: Rch<GcflobddNode<'grammar>>,
     ) {
         let key = ReductionCacheKey::new(n, indices);
-        self.reduction_cache.insert(key, node);
+        self.reduction_cache.insert(key, Rc::downgrade(&node));
     }
     pub(super) fn set_bdd_reduction_cache(
         &mut self,
@@ -253,7 +287,7 @@ impl<'grammar> Context<'grammar> {
         node: Rch<BddNode>,
     ) {
         let key = ReductionCacheKey::new(n, indices);
-        self.bdd_reduction_cache.insert(key, node);
+        self.bdd_reduction_cache.insert(key, Rc::downgrade(&node));
     }
 
     // won't create a new node if it is not in the cache.
@@ -310,19 +344,28 @@ impl<'grammar> Context<'grammar> {
             * (size_of::<Rch<Vec<usize>>>() + size_of::<Vec<usize>>());
 
         total_size += self.pair_product_cache.len()
-            * (size_of::<(u64, u64)>() + size_of::<ConnectionPair<'grammar>>());
+            * (size_of::<(
+                WeakKey<GcflobddNode<'grammar>>,
+                WeakKey<GcflobddNode<'grammar>>,
+            )>() + size_of::<ConnectionPair<'grammar>>());
         total_size += self.bdd_pair_product_cache.len()
-            * (size_of::<(u64, u64)>() + size_of::<BddConnectionPair>());
+            * (size_of::<(WeakKey<BddNode>, WeakKey<BddNode>)>() + size_of::<BddConnectionPair>());
 
         total_size += self.pair_map_cache.len()
-            * (size_of::<(u64, u64, u64)>() + size_of::<Connection<'grammar>>());
+            * (size_of::<(
+                WeakKey<GcflobddNode<'grammar>>,
+                WeakKey<GcflobddNode<'grammar>>,
+                WeakKey<Vec<usize>>,
+            )>() + size_of::<Connection<'grammar>>());
         total_size += self.bdd_pair_map_cache.len()
-            * (size_of::<(u64, u64, u64)>() + size_of::<BddConnection>());
+            * (size_of::<(WeakKey<BddNode>, WeakKey<BddNode>, WeakKey<Vec<usize>>)>()
+                + size_of::<BddConnection>());
 
         total_size += self.reduction_cache.len()
-            * (size_of::<ReductionCacheKey>() + size_of::<Rch<GcflobddNode<'grammar>>>());
+            * (size_of::<ReductionCacheKey<GcflobddNode<'grammar>>>()
+                + size_of::<Rch<GcflobddNode<'grammar>>>());
         total_size += self.bdd_reduction_cache.len()
-            * (size_of::<ReductionCacheKey>() + size_of::<Rch<BddNode>>());
+            * (size_of::<ReductionCacheKey<BddNode>>() + size_of::<Rch<BddNode>>());
 
         total_size += self.op_cache.iter().fold(0, |acc, cache| {
             acc + cache.len() * (3 * size_of::<Gcflobdd<'grammar>>())
@@ -407,16 +450,34 @@ impl<'grammar> Context<'grammar> {
         Self::gcflobdd_node_table_gc(&mut self.gcflobdd_node_table);
         Self::bdd_node_table_gc(&mut self.bdd_node_table);
         // clear return map after node table gc
-        self.return_map_table = self
-            .return_map_table
-            .drain()
-            .filter(|v| Rc::strong_count(v) > 1)
-            .collect();
-        self.reduce_matrix_table = self
-            .reduce_matrix_table
-            .drain()
-            .filter(|v| Rc::strong_count(v) > 1)
-            .collect();
+        self.return_map_table.retain(|v| Rc::strong_count(v) > 1);
+        self.reduce_matrix_table.retain(|v| Rc::strong_count(v) > 1);
+    }
+
+    pub fn gc_soft(&mut self) {
+        // Clean tables
+        Self::gcflobdd_node_table_gc(&mut self.gcflobdd_node_table);
+        Self::bdd_node_table_gc(&mut self.bdd_node_table);
+
+        // Clean caches
+        self.pair_product_cache
+            .retain(|(k0, k1), v| k0.is_valid() && k1.is_valid() && v.upgrade().is_some());
+        self.bdd_pair_product_cache
+            .retain(|(k0, k1), v| k0.is_valid() && k1.is_valid() && v.upgrade().is_some());
+        self.pair_map_cache.retain(|(k0, k1, k2), v| {
+            k0.is_valid() && k1.is_valid() && k2.is_valid() && v.upgrade().is_some()
+        });
+        self.bdd_pair_map_cache.retain(|(k0, k1, k2), v| {
+            k0.is_valid() && k1.is_valid() && k2.is_valid() && v.upgrade().is_some()
+        });
+        self.reduction_cache
+            .retain(|ReductionCacheKey(k0, _), v| k0.is_valid() && v.upgrade().is_some());
+        self.bdd_reduction_cache
+            .retain(|ReductionCacheKey(k0, _), v| k0.is_valid() && v.upgrade().is_some());
+
+        // clean return map
+        self.return_map_table.retain(|v| Rc::strong_count(v) > 1);
+        self.reduce_matrix_table.retain(|v| Rc::strong_count(v) > 1);
     }
 }
 impl<'grammar> std::fmt::Debug for Context<'grammar> {

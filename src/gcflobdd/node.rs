@@ -363,7 +363,7 @@ impl<'grammar> GcflobddNode<'grammar> {
     pub fn pair_product(
         lhs: &Rch<Self>,
         rhs: &Rch<Self>,
-        context: &RefCell<Context<'grammar>>,
+        context: &'grammar RefCell<Context<'grammar>>,
     ) -> ConnectionPair<'grammar> {
         // should be the same grammar
         debug_assert_eq!(lhs.grammar, rhs.grammar);
@@ -481,7 +481,7 @@ impl<'grammar> GcflobddNode<'grammar> {
         rhs: &Rch<Self>,
         reduce_matrix: &Rch<Vec<usize>>, // should be a ReduceMap if either lhs / rhs is a dont care
         num_exits: usize,                // it's only used in reduce of don't care and normal nodes
-        context: &RefCell<Context<'grammar>>,
+        context: &'grammar RefCell<Context<'grammar>>,
     ) -> Connection<'grammar> {
         if num_exits == 1 {
             return Connection {

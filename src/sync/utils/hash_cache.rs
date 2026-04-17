@@ -3,7 +3,7 @@ use parking_lot::lock_api::RwLockUpgradableReadGuard;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 #[cfg(feature = "fx-hash")]
 use rustc_hash::FxHasher as DefaultHasher;
@@ -17,6 +17,7 @@ pub struct HashCachedWithHasher<T: Hash, H: Hasher + Default> {
 }
 pub type HashCached<T> = HashCachedWithHasher<T, DefaultHasher>;
 pub type Arch<T> = Arc<HashCached<T>>;
+pub type Weakh<T> = Weak<HashCached<T>>;
 
 impl<T: Hash + Debug, H: Hasher + Default> Debug for HashCachedWithHasher<T, H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::Deref;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 #[cfg(feature = "fx-hash")]
 use rustc_hash::FxHasher as DefaultHasher;
@@ -18,6 +18,7 @@ pub struct HashCachedWithHasher<T: Hash, H: Hasher + Default> {
 }
 pub type HashCached<T> = HashCachedWithHasher<T, DefaultHasher>;
 pub type Rch<T> = Rc<HashCached<T>>;
+pub type Weakh<T> = Weak<HashCached<T>>;
 
 impl<T: Hash + Debug, H: Hasher + Default> Debug for HashCachedWithHasher<T, H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -81,3 +82,41 @@ impl<T: Hash + PartialEq, H: Hasher + Default> PartialEq for HashCachedWithHashe
     }
 }
 impl<T: Hash + Eq, H: Hasher + Default> Eq for HashCachedWithHasher<T, H> {}
+
+#[derive(Debug)]
+/// A struct with guarantee that a == b if and only if &a == &b
+pub struct WeakKey<T: Hash>(Weakh<T>);
+
+impl<T: Hash> Clone for WeakKey<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T: Hash> PartialEq for WeakKey<T> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        Weak::as_ptr(&self.0) == Weak::as_ptr(&other.0)
+    }
+}
+impl<T: Hash> Eq for WeakKey<T> {}
+
+impl<T: Hash> Hash for WeakKey<T> {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Weak::as_ptr(&self.0).hash(state);
+    }
+}
+
+impl<T: Hash> From<&Rch<T>> for WeakKey<T> {
+    #[inline]
+    fn from(value: &Rch<T>) -> Self {
+        Self(Rc::downgrade(value))
+    }
+}
+impl<T: Hash> WeakKey<T> {
+    pub fn is_valid(&self) -> bool {
+        Weak::upgrade(&self.0).is_some()
+    }
+}

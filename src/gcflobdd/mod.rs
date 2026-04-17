@@ -35,7 +35,7 @@ pub type Gcflobdd<'grammar> = GcflobddT<'grammar, bool>;
 
 macro_rules! _define_op {
     ($name:ident, $pair_func:ident, $get_op_cache:ident, $set_op_cache:ident, $op_type: ident, $val_type:ident, $op_code:ident, $lhs:ident, $rhs:ident, $op:expr) => {
-        pub fn $name(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
+        pub fn $name(&self, rhs: &Self, context: &'grammar RefCell<Context<'grammar>>) -> Self {
             if let Some(ans) = context
                 .borrow()
                 .$get_op_cache::<{ $op_type::$op_code as usize }>(self.clone(), rhs.clone())
@@ -247,7 +247,7 @@ impl<'grammar, T: Copy> GcflobddT<'grammar, T> {
     pub fn pair_product(
         &self,
         rhs: &Self,
-        context: &RefCell<Context<'grammar>>,
+        context: &'grammar RefCell<Context<'grammar>>,
     ) -> GcflobddT<'grammar, (T, T)> {
         let ConnectionPair {
             entry_point,
@@ -316,7 +316,7 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
         &self,
         rhs: &Self,
         op: impl Fn(&T, &T) -> T,
-        context: &RefCell<Context<'grammar>>,
+        context: &'grammar RefCell<Context<'grammar>>,
     ) -> Self {
         self.pair_product(rhs, context)
             .map(|(a, b)| op(a, b), context)
@@ -326,7 +326,7 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
         &self,
         rhs: &Self,
         op: impl Fn(&T, &T) -> T,
-        context: &RefCell<Context<'grammar>>,
+        context: &'grammar RefCell<Context<'grammar>>,
     ) -> Self {
         let mut new_return_handle = vec![];
         let lhs_num_exits = self.connection.entry_point.get_num_exits();

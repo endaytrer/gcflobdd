@@ -265,6 +265,10 @@ fn main() {
             b = b.mk_and(&c, &context);
             a = a.mk_and(&b, &context);
             row.push(a);
+            std::mem::drop(d);
+            std::mem::drop(c);
+            std::mem::drop(b);
+            context.borrow_mut().gc_soft();
         }
         imp_batch.push(row);
     }
@@ -275,6 +279,8 @@ fn main() {
         println!("Combining OR condition for row {} / {}", i, n);
         queen = queen.mk_and(&or_batch[i], &context);
     }
+    std::mem::drop(or_batch);
+    context.borrow_mut().gc_soft();
 
     for i in 0..n {
         let mut tmp_queen = Gcflobdd::mk_true(&grammar, &context);
@@ -286,6 +292,8 @@ fn main() {
             tmp_queen = tmp_queen.mk_and(&imp_batch[i][j], &context);
         }
         queen = queen.mk_and(&tmp_queen, &context);
+        std::mem::drop(tmp_queen);
+        context.borrow_mut().gc_soft();
     }
 
     let path = queen.find_one_satisfiable_assignment().unwrap();
