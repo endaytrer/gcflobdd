@@ -19,15 +19,11 @@ use std::{
 };
 
 #[derive(Clone, Hash, PartialEq, Eq)]
-struct ReductionCacheKey(u64, u64);
+struct ReductionCacheKey(usize, Vec<usize>);
 
 impl ReductionCacheKey {
     fn new<T: Hash>(node: &Rch<T>, reduction_map: &[usize]) -> Self {
-        let hash_1 = node.hash_code();
-        let mut hasher = DefaultHasher::default();
-        reduction_map.hash(&mut hasher);
-        let hash_2 = hasher.finish();
-        Self(hash_1, hash_2)
+        Self(Rc::as_ptr(node) as usize, reduction_map.to_vec())
     }
 }
 
@@ -61,11 +57,11 @@ pub struct Context<'grammar> {
     reduce_matrix_table: HashSet<Rch<Vec<usize>>>,
 
     // caches
-    pair_product_cache: HashMap<(u64, u64), ConnectionPair<'grammar>>,
-    bdd_pair_product_cache: HashMap<(u64, u64), BddConnectionPair>,
+    pair_product_cache: HashMap<(usize, usize), ConnectionPair<'grammar>>,
+    bdd_pair_product_cache: HashMap<(usize, usize), BddConnectionPair>,
     /// (lhs, rhs, op_matrix) -> Connection
-    pair_map_cache: HashMap<(u64, u64, u64), Connection<'grammar>>,
-    bdd_pair_map_cache: HashMap<(u64, u64, u64), BddConnection>,
+    pair_map_cache: HashMap<(usize, usize, usize), Connection<'grammar>>,
+    bdd_pair_map_cache: HashMap<(usize, usize, usize), BddConnection>,
     reduction_cache: HashMap<ReductionCacheKey, Rch<GcflobddNode<'grammar>>>,
     bdd_reduction_cache: HashMap<ReductionCacheKey, Rch<BddNode>>,
 
@@ -134,8 +130,8 @@ impl<'grammar> Context<'grammar> {
         n1: &Rch<GcflobddNode>,
         n2: &Rch<GcflobddNode>,
     ) -> Option<ConnectionPair<'grammar>> {
-        let hash1 = n1.hash_code();
-        let hash2 = n2.hash_code();
+        let hash1 = Rc::as_ptr(n1) as usize;
+        let hash2 = Rc::as_ptr(n2) as usize;
         if let Some(t) = self.pair_product_cache.get(&(hash1, hash2)).cloned() {
             return Some(t);
         }
@@ -149,8 +145,8 @@ impl<'grammar> Context<'grammar> {
         n1: &Rch<BddNode>,
         n2: &Rch<BddNode>,
     ) -> Option<BddConnectionPair> {
-        let hash1 = n1.hash_code();
-        let hash2 = n2.hash_code();
+        let hash1 = Rc::as_ptr(n1) as usize;
+        let hash2 = Rc::as_ptr(n2) as usize;
         if let Some(t) = self.bdd_pair_product_cache.get(&(hash1, hash2)).cloned() {
             return Some(t);
         }
@@ -165,9 +161,9 @@ impl<'grammar> Context<'grammar> {
         n2: &Rch<GcflobddNode>,
         op_matrix: &Rch<Vec<usize>>,
     ) -> Option<Connection<'grammar>> {
-        let hash1 = n1.hash_code();
-        let hash2 = n2.hash_code();
-        let hash3 = op_matrix.hash_code();
+        let hash1 = Rc::as_ptr(n1) as usize;
+        let hash2 = Rc::as_ptr(n2) as usize;
+        let hash3 = Rc::as_ptr(op_matrix) as usize;
         self.pair_map_cache.get(&(hash1, hash2, hash3)).cloned()
     }
     pub(super) fn get_bdd_pair_map_cache(
@@ -176,9 +172,9 @@ impl<'grammar> Context<'grammar> {
         n2: &Rch<BddNode>,
         op_matrix: &Rch<Vec<usize>>,
     ) -> Option<BddConnection> {
-        let hash1 = n1.hash_code();
-        let hash2 = n2.hash_code();
-        let hash3 = op_matrix.hash_code();
+        let hash1 = Rc::as_ptr(n1) as usize;
+        let hash2 = Rc::as_ptr(n2) as usize;
+        let hash3 = Rc::as_ptr(op_matrix) as usize;
         self.bdd_pair_map_cache.get(&(hash1, hash2, hash3)).cloned()
     }
     pub(super) fn get_reduction_cache(
@@ -203,8 +199,8 @@ impl<'grammar> Context<'grammar> {
         n2: &Rch<GcflobddNode>,
         conn: ConnectionPair<'grammar>,
     ) {
-        let hash1 = n1.hash_code();
-        let hash2 = n2.hash_code();
+        let hash1 = Rc::as_ptr(n1) as usize;
+        let hash2 = Rc::as_ptr(n2) as usize;
         self.pair_product_cache.insert((hash1, hash2), conn);
     }
     pub(super) fn set_bdd_pair_product_cache(
@@ -213,8 +209,8 @@ impl<'grammar> Context<'grammar> {
         n2: &Rch<BddNode>,
         conn: BddConnectionPair,
     ) {
-        let hash1 = n1.hash_code();
-        let hash2 = n2.hash_code();
+        let hash1 = Rc::as_ptr(n1) as usize;
+        let hash2 = Rc::as_ptr(n2) as usize;
         self.bdd_pair_product_cache.insert((hash1, hash2), conn);
     }
     pub(super) fn set_pair_map_cache(
@@ -224,9 +220,9 @@ impl<'grammar> Context<'grammar> {
         op_matrix: &Rch<Vec<usize>>,
         conn: Connection<'grammar>,
     ) {
-        let hash1 = n1.hash_code();
-        let hash2 = n2.hash_code();
-        let hash3 = op_matrix.hash_code();
+        let hash1 = Rc::as_ptr(n1) as usize;
+        let hash2 = Rc::as_ptr(n2) as usize;
+        let hash3 = Rc::as_ptr(op_matrix) as usize;
         self.pair_map_cache.insert((hash1, hash2, hash3), conn);
     }
     pub(super) fn set_bdd_pair_map_cache(
@@ -236,9 +232,9 @@ impl<'grammar> Context<'grammar> {
         op_matrix: &Rch<Vec<usize>>,
         conn: BddConnection,
     ) {
-        let hash1 = n1.hash_code();
-        let hash2 = n2.hash_code();
-        let hash3 = op_matrix.hash_code();
+        let hash1 = Rc::as_ptr(n1) as usize;
+        let hash2 = Rc::as_ptr(n2) as usize;
+        let hash3 = Rc::as_ptr(op_matrix) as usize;
         self.bdd_pair_map_cache.insert((hash1, hash2, hash3), conn);
     }
     pub(super) fn set_reduction_cache(
