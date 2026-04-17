@@ -291,8 +291,9 @@ fn main() {
     let path = queen.find_one_satisfiable_assignment().unwrap();
     let end_time = std::time::Instant::now();
     println!(
-        "Solved in {} ms, with {} memory usage",
+        "Solved in {} ms, with {} nodes, {} memory usage",
         end_time.duration_since(start_time).as_millis(),
+        context.borrow().node_count(),
         size_to_readable(context.borrow().size_estimate())
     );
     println!("Path:");
@@ -309,4 +310,13 @@ fn main() {
         }
         println!();
     }
+    let gc_start_time = std::time::Instant::now();
+    context.borrow_mut().gc();
+    let gc_end_time = std::time::Instant::now();
+    println!(
+        "GC in {} ms, with {} nodes, {} memory usage",
+        gc_end_time.duration_since(gc_start_time).as_millis(),
+        context.borrow().node_count(),
+        size_to_readable(context.borrow().size_estimate())
+    );
 }

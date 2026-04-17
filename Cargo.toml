@@ -22,3 +22,7 @@ complex = ["dep:rug"]
 [[test]]
 name = "n_queens"
 harness = false
+
+[[test]]
+name = "xor"
+harness = false

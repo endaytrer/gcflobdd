@@ -27,6 +27,7 @@ pub struct GcflobddNode<'grammar> {
 impl std::fmt::Debug for GcflobddNode<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GcflobddNode")
+            .field("num_vars", &self.grammar.num_vars)
             .field("num_exits", &self.num_exits)
             .field("node", &self.node)
             .finish()

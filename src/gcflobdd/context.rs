@@ -405,6 +405,9 @@ impl<'grammar> Context<'grammar> {
         self.bdd_reduction_cache.clear();
         self.bdd_pair_product_cache.clear();
         self.op_cache.iter_mut().for_each(|map| map.clear());
+        self.int_op_cache.iter_mut().for_each(|map| map.clear());
+        self.pair_map_cache.clear();
+        self.bdd_pair_map_cache.clear();
         Self::gcflobdd_node_table_gc(&mut self.gcflobdd_node_table);
         Self::bdd_node_table_gc(&mut self.bdd_node_table);
         // clear return map after node table gc
