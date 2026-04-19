@@ -12,12 +12,16 @@ parking_lot = { version = "0.12.5", optional = true }
 rug = { version = "1.29.0", optional = true }
 rustc-hash = { version = "2.1.2", optional = true }
 
+[build-dependencies]
+cbindgen = { version = "0.29", optional = true }
+
 [features]
 default = ["fx-hash", "complex"]
 sync = ["dep:parking_lot"]
 separate_reduce_map = []
 fx-hash = ["dep:rustc-hash"]
 complex = ["dep:rug"]
+ffi = ["dep:cbindgen"]
 
 [[test]]
 name = "n_queens"
