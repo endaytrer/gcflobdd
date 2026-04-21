@@ -11,6 +11,7 @@ lazy-regex = "3.6.0"
 parking_lot = { version = "0.12.5", optional = true }
 rug = { version = "1.29.0", optional = true }
 rustc-hash = { version = "2.1.2", optional = true }
+static_assertions = "1.1.0"
 
 [features]
 default = ["fx-hash", "complex"]

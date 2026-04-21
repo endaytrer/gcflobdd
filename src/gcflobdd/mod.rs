@@ -5,6 +5,7 @@ mod connection;
 pub mod context;
 mod node;
 mod return_map;
+pub mod soa;
 #[cfg(test)]
 mod tests;
 

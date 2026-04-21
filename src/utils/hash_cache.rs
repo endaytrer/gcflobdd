@@ -12,7 +12,7 @@ use std::hash::DefaultHasher;
 
 #[derive(Clone)]
 pub struct HashCachedWithHasher<T: Hash, H: Hasher + Default> {
-    value: T,
+    pub(crate) value: T,
     hash: u64,
     hasher: PhantomData<H>,
 }

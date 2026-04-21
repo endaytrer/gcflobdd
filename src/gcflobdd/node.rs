@@ -20,7 +20,7 @@ use std::{
 use std::{collections::HashMap, hash::DefaultHasher};
 
 pub struct GcflobddNode<'grammar> {
-    num_exits: usize,
+    pub(super) num_exits: usize,
     pub(super) grammar: &'grammar Rc<GrammarNode>,
     pub(super) node: GcflobddNodeType<'grammar>,
 }
@@ -82,6 +82,7 @@ impl std::ops::Index<usize> for ReduceMap {
 }
 
 #[derive(Debug, Hash, PartialEq, Eq)]
+#[repr(u8)]
 pub(super) enum GcflobddNodeType<'grammar> {
     DontCare,
     Fork,

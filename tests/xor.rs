@@ -55,9 +55,11 @@ fn main() {
     }
     let end_time = std::time::Instant::now();
     context.borrow_mut().gc();
+    let gc_end_time = std::time::Instant::now();
     println!(
-        "Solved in {} ms, with {} nodes, {} memory usage",
+        "Solved in {} ms, GC in {} ms, with {} nodes, {} memory usage",
         end_time.duration_since(start_time).as_millis(),
+        gc_end_time.duration_since(end_time).as_millis(),
         context.borrow().node_count(),
         size_to_readable(context.borrow().size_estimate())
     );
