@@ -11,7 +11,7 @@ use rustc_hash::FxHasher as DefaultHasher;
 use std::hash::DefaultHasher;
 
 #[derive(Clone)]
-pub struct HashCachedWithHasher<T: Hash, H: Hasher + Default> {
+pub struct HashCachedWithHasher<T, H: Hasher + Default> {
     pub(crate) value: T,
     hash: u64,
     hasher: PhantomData<H>,
@@ -19,7 +19,7 @@ pub struct HashCachedWithHasher<T: Hash, H: Hasher + Default> {
 pub type HashCached<T> = HashCachedWithHasher<T, DefaultHasher>;
 pub type Rch<T> = Rc<HashCached<T>>;
 
-impl<T: Hash + Debug, H: Hasher + Default> Debug for HashCachedWithHasher<T, H> {
+impl<T: Debug, H: Hasher + Default> Debug for HashCachedWithHasher<T, H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("HashCached").field(&self.value).finish()
     }
