@@ -288,7 +288,7 @@ fn main() {
         queen = queen.mk_and(&tmp_queen, &context);
     }
 
-    let path = queen.find_one_satisfiable_assignment().unwrap();
+    let path = queen.find_one_satisfiable_assignment(&context).unwrap();
     let end_time = std::time::Instant::now();
     println!(
         "Solved in {} ms, with {} nodes, {} memory usage",

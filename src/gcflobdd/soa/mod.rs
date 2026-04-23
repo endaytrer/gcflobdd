@@ -14,46 +14,60 @@ use crate::utils::hash_cache::HashCached;
 type FatPointer = (u64, u64, u64);
 
 pub trait Soa: Default {
-    type UnderlyingType;
-    type ReferenceType: Copy;
+    /// Type to set its value.
+    type ValueType;
+    /// Type to get its value.
+    type RefType<'a>
+    where
+        Self: 'a;
+    /// Type to be gotten from the soa.
+    type ViewType<'a>
+    where
+        Self: 'a;
+
     fn with_capacity(capacity: usize) -> Self;
-    unsafe fn malloc(&mut self, capacity: usize);
+    unsafe fn calloc(&mut self, capacity: usize);
     unsafe fn realloc(&mut self, old_capacity: usize, new_capacity: usize);
-    /// set always takes a copy of the underlying type to correctly transfer ownership;
-    unsafe fn set(&mut self, index: usize, node: Self::UnderlyingType);
-    /// get always returns a copy of the underlying type, since it be referenced;
-    unsafe fn get(&self, index: usize) -> Self::ReferenceType;
+    unsafe fn get<'a>(&'a self, index: usize) -> Self::ViewType<'a>;
+    unsafe fn set(&mut self, index: usize, node: Self::ValueType);
     /// Drops the value stored at `index` in-place. After this, the slot is logically
     /// uninitialised; a subsequent `set` at the same index does not need to (and
     /// must not) drop the previous contents.
     unsafe fn drop_at(&mut self, index: usize);
 }
 
-/// A packed version of GcflobddNode<'grammar>
-pub struct RchGcflobddNode<'grammar> {
-    /// only strong count
-    reference_count: usize,
-    inner: HashCached<GcflobddNode<'grammar>>,
-    // next: usize
+macro_rules! calloc {
+    ($ty:ty, $cap:expr) => {
+        unsafe { alloc(Layout::array::<$ty>($cap).unwrap_unchecked()) as *mut $ty }
+    };
+}
+
+macro_rules! realloc {
+    ($ty:ty, $ptr:expr, $old_cap:expr, $new_cap:expr) => {
+        unsafe {
+            realloc(
+                $ptr as *mut u8,
+                Layout::array::<$ty>($old_cap).unwrap_unchecked(),
+                $new_cap * std::mem::size_of::<$ty>(),
+            ) as *mut $ty
+        }
+    };
 }
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
-enum SoaNodeType {
+pub enum SoaGcflobddNodeType {
     DontCare,
     Fork,
     Internal,
     Bdd,
 }
 #[derive(Debug, Default)]
-struct SoaNode<'grammar> {
-    /// components of Rc
-    reference_count: *mut usize,
-
+pub struct SoaGcflobddNode<'grammar> {
     /// components of nodes
     num_exits: *mut usize,
     grammar: *mut &'grammar Rc<GrammarNode>,
-    node_type: *mut SoaNodeType,
+    node_type: *mut SoaGcflobddNodeType,
     /// A fat pointer to:
     /// - DontCare and Fork: does not apply (bytes are uninitialised — never read)
     /// - Internal: `Vec<Vec<Connection>>` (24 bytes, fills the slot)
@@ -68,50 +82,96 @@ struct SoaNode<'grammar> {
 }
 
 #[derive(Debug, Default)]
-struct SoaHashTableValue<SOA: Soa> {
+struct SoaRc<T> {
+    inner: T,
+    reference_count: *mut usize,
+}
+#[derive(Debug)]
+struct RcView<T> {
+    inner: T,
+    reference_count: usize,
+}
+
+impl<T: Soa> Soa for SoaRc<T> {
+    type ValueType = T::ValueType;
+    type RefType<'a>
+        = T::RefType<'a>
+    where
+        Self: 'a;
+    type ViewType<'a>
+        = RcView<T::ViewType<'a>>
+    where
+        Self: 'a;
+
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            inner: T::with_capacity(capacity),
+            reference_count: calloc!(usize, capacity),
+        }
+    }
+
+    unsafe fn calloc(&mut self, capacity: usize) {
+        unsafe { self.inner.calloc(capacity) };
+        self.reference_count = calloc!(usize, capacity);
+    }
+    unsafe fn realloc(&mut self, old_capacity: usize, new_capacity: usize) {
+        unsafe { self.inner.realloc(old_capacity, new_capacity) };
+        self.reference_count = realloc!(usize, self.reference_count, old_capacity, new_capacity);
+    }
+
+    unsafe fn get<'a>(&'a self, index: usize) -> Self::ViewType<'a> {
+        RcView {
+            inner: unsafe { self.inner.get(index) },
+            reference_count: unsafe { self.reference_count.add(index).read() },
+        }
+    }
+
+    unsafe fn set(&mut self, index: usize, node: Self::ValueType) {
+        unsafe { self.inner.set(index, node) };
+        unsafe { self.reference_count.add(index).write(1) };
+    }
+
+    unsafe fn drop_at(&mut self, index: usize) {
+        unsafe { self.inner.drop_at(index) };
+        // no need to drop for reference_count
+    }
+}
+
+#[derive(Debug, Default)]
+struct SoaHashSetValue<T> {
+    inner: T,
     hash: *mut u64,
-    inner: SOA,
     next: *mut isize,
 }
 
 #[derive(Debug)]
-struct HashedReferenceType<SOA: Soa> {
-    hash: u64,
-    inner: SOA::ReferenceType,
-    next: isize,
+pub struct HashSetValueView<T> {
+    pub hash: u64,
+    pub inner: T,
+    pub next: isize,
 }
 
-impl<SOA: Soa> Clone for HashedReferenceType<SOA> {
-    fn clone(&self) -> Self {
-        Self {
-            hash: self.hash,
-            inner: self.inner,
-            next: self.next,
-        }
-    }
-}
-impl<SOA: Soa> Copy for HashedReferenceType<SOA> {}
-
-impl<SOA: Soa> PartialEq for HashedReferenceType<SOA>
-where
-    SOA::ReferenceType: Eq,
-{
+impl<T: PartialEq> PartialEq for HashSetValueView<T> {
     // next is not compaired
     fn eq(&self, other: &Self) -> bool {
         self.hash == other.hash && self.inner == other.inner
     }
 }
-impl<SOA: Soa> Eq for HashedReferenceType<SOA> where SOA::ReferenceType: Eq {}
+impl<T: Eq> Eq for HashSetValueView<T> {}
 
-impl<SOA: Soa> PartialEq<HashCached<SOA::UnderlyingType>> for HashedReferenceType<SOA> where SOA::UnderlyingType: std::hash::Hash, SOA::ReferenceType: PartialEq<SOA::UnderlyingType> {
-    fn eq(&self, other: &HashCached<SOA::UnderlyingType>) -> bool {
-        self.hash == other.hash_code() && self.inner == other.value
-    }
-}
-
-impl<SOA: Soa> Soa for SoaHashTableValue<SOA> where SOA::UnderlyingType: std::hash::Hash {
-    type UnderlyingType = HashCached<SOA::UnderlyingType>;
-    type ReferenceType = HashedReferenceType<SOA>;
+impl<SOA: Soa> Soa for SoaHashSetValue<SOA>
+where
+    SOA::ValueType: std::hash::Hash,
+{
+    type ValueType = HashCached<SOA::ValueType>;
+    type RefType<'a>
+        = HashCached<SOA::RefType<'a>>
+    where
+        Self: 'a;
+    type ViewType<'a>
+        = HashSetValueView<SOA::ViewType<'a>>
+    where
+        Self: 'a;
     fn with_capacity(capacity: usize) -> Self {
         debug_assert!(capacity > 0);
         Self {
@@ -120,10 +180,10 @@ impl<SOA: Soa> Soa for SoaHashTableValue<SOA> where SOA::UnderlyingType: std::ha
             hash: unsafe { alloc(Layout::array::<u64>(capacity).unwrap()) as *mut u64 },
         }
     }
-    unsafe fn malloc(&mut self, capacity: usize) {
+    unsafe fn calloc(&mut self, capacity: usize) {
         debug_assert!(capacity > 0);
         debug_assert_eq!(self.next, null_mut());
-        unsafe { self.inner.malloc(capacity) };
+        unsafe { self.inner.calloc(capacity) };
         self.next = unsafe { alloc(Layout::array::<isize>(capacity).unwrap()) as *mut isize };
         self.hash = unsafe { alloc(Layout::array::<u64>(capacity).unwrap()) as *mut u64 };
     }
@@ -145,14 +205,14 @@ impl<SOA: Soa> Soa for SoaHashTableValue<SOA> where SOA::UnderlyingType: std::ha
             ) as *mut u64
         };
     }
-    unsafe fn set(&mut self, index: usize, node: Self::UnderlyingType) {
+    unsafe fn set(&mut self, index: usize, node: Self::ValueType) {
         let hash_code = node.hash_code();
         unsafe { self.inner.set(index, node.value) };
         // don't write next
         unsafe { self.hash.add(index).write(hash_code) };
     }
-    unsafe fn get(&self, index: usize) -> Self::ReferenceType {
-        Self::ReferenceType {
+    unsafe fn get<'a>(&'a self, index: usize) -> Self::ViewType<'a> {
+        Self::ViewType {
             hash: unsafe { self.hash.add(index).read() },
             inner: unsafe { self.inner.get(index) },
             next: unsafe { self.next.add(index).read() },
@@ -167,188 +227,163 @@ impl<SOA: Soa> Soa for SoaHashTableValue<SOA> where SOA::UnderlyingType: std::ha
 const_assert!(std::mem::size_of::<FatPointer>() == std::mem::size_of::<Vec<Vec<Connection>>>());
 const_assert!(std::mem::size_of::<FatPointer>() == std::mem::size_of::<Bdd>() + 16);
 
-#[derive(Debug, Clone, Copy)]
-struct RefRchGcflobddNode<'grammar> {
-    num_exits: usize,
-    grammar: &'grammar Rc<GrammarNode>,
-    node_type: SoaNodeType,
-    /// See `SoaNode::union_pointer_0` — stored as `MaybeUninit` because some
-    /// variants don't write all 24 bytes. Only reinterpreted through
-    /// `node_type`-gated pointer casts.
-    union_pointer_0: MaybeUninit<FatPointer>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefGcflobddNodeType<'a, 'grammar> {
+    DontCare,
+    Fork,
+    Internal(&'a InternalNode<'grammar>),
+    Bdd(&'a Bdd),
 }
-impl<'grammar> PartialEq for RefRchGcflobddNode<'grammar> {
-    fn eq(&self, other: &Self) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefGcflobddNode<'a, 'grammar> {
+    pub(crate) num_exits: usize,
+    pub(crate) grammar: &'grammar Rc<GrammarNode>,
+    pub(crate) node: RefGcflobddNodeType<'a, 'grammar>,
+}
+
+impl<'a, 'grammar> From<&'a GcflobddNode<'grammar>> for RefGcflobddNode<'a, 'grammar> {
+    fn from(node: &'a GcflobddNode<'grammar>) -> Self {
+        let node_type = match &node.node {
+            GcflobddNodeType::DontCare => RefGcflobddNodeType::DontCare,
+            GcflobddNodeType::Fork => RefGcflobddNodeType::Fork,
+            GcflobddNodeType::Internal(internal_node) => {
+                RefGcflobddNodeType::Internal(internal_node)
+            }
+            GcflobddNodeType::Bdd(bdd) => RefGcflobddNodeType::Bdd(bdd),
+        };
+        Self {
+            num_exits: 0,
+            grammar: node.grammar,
+            node: node_type,
+        }
+    }
+}
+
+impl<'a, 'grammar> PartialEq<GcflobddNode<'grammar>> for RefGcflobddNode<'a, 'grammar> {
+    fn eq(&self, other: &GcflobddNode<'grammar>) -> bool {
         self.num_exits == other.num_exits
             && self.grammar == other.grammar
-            && match (self.node_type, other.node_type) {
-                (SoaNodeType::DontCare, SoaNodeType::DontCare) => true,
-                (SoaNodeType::Fork, SoaNodeType::Fork) => true,
-                (SoaNodeType::Internal, SoaNodeType::Internal) => unsafe {
-                    (self.union_pointer_0.as_ptr() as *const InternalNode)
-                        .as_ref()
-                        .unwrap_unchecked()
-                        == (other.union_pointer_0.as_ptr() as *const InternalNode)
-                            .as_ref()
-                            .unwrap_unchecked()
-                },
-                (SoaNodeType::Bdd, SoaNodeType::Bdd) => unsafe {
-                    (self.union_pointer_0.as_ptr() as *const Bdd)
-                        .as_ref()
-                        .unwrap_unchecked()
-                        == (other.union_pointer_0.as_ptr() as *const Bdd)
-                            .as_ref()
-                            .unwrap_unchecked()
-                },
-                _ => false,
-            }
-    }
-}
-impl<'grammar> Eq for RefRchGcflobddNode<'grammar> {}
-
-impl<'grammar> PartialEq<RchGcflobddNode<'grammar>> for RefRchGcflobddNode<'grammar> {
-    fn eq(&self, other: &RchGcflobddNode<'grammar>) -> bool {
-        self.num_exits == other.inner.num_exits
-            && self.grammar == other.inner.grammar
-            && match (self.node_type, &other.inner.node) {
-                (SoaNodeType::DontCare, GcflobddNodeType::DontCare) => true,
-                (SoaNodeType::Fork, GcflobddNodeType::Fork) => true,
-                (SoaNodeType::Internal, GcflobddNodeType::Internal(internal_node)) => unsafe {
-                    (self.union_pointer_0.as_ptr() as *const InternalNode)
-                        .as_ref()
-                        .unwrap_unchecked()
-                        == internal_node
-                },
-                (SoaNodeType::Bdd, GcflobddNodeType::Bdd(bdd)) => unsafe {
-                    (self.union_pointer_0.as_ptr() as *const Bdd)
-                        .as_ref()
-                        .unwrap_unchecked()
-                        == bdd
-                },
+            && match (self.node, &other.node) {
+                (RefGcflobddNodeType::DontCare, GcflobddNodeType::DontCare) => true,
+                (RefGcflobddNodeType::Fork, GcflobddNodeType::Fork) => true,
+                (
+                    RefGcflobddNodeType::Internal(lhs_internal),
+                    GcflobddNodeType::Internal(rhs_internal),
+                ) => lhs_internal == rhs_internal,
+                (RefGcflobddNodeType::Bdd(lhs_bdd), GcflobddNodeType::Bdd(rhs_bdd)) => {
+                    lhs_bdd == rhs_bdd
+                }
                 _ => false,
             }
     }
 }
 
-impl<'grammar> Soa for SoaNode<'grammar> {
-    type UnderlyingType = RchGcflobddNode<'grammar>;
-    type ReferenceType = RefRchGcflobddNode<'grammar>;
+impl<'grammar> Soa for SoaGcflobddNode<'grammar> {
+    type ValueType = GcflobddNode<'grammar>;
+    type RefType<'a>
+        = RefGcflobddNode<'a, 'grammar>
+    where
+        Self: 'a;
+    type ViewType<'a>
+        = RefGcflobddNode<'a, 'grammar>
+    where
+        Self: 'a;
     fn with_capacity(capacity: usize) -> Self {
         debug_assert!(capacity > 0);
         Self {
-            reference_count: unsafe {
-                alloc(Layout::array::<usize>(capacity).unwrap()) as *mut usize
-            },
-            num_exits: unsafe { alloc(Layout::array::<usize>(capacity).unwrap()) as *mut usize },
-            grammar: unsafe {
-                alloc(Layout::array::<&'grammar Rc<GrammarNode>>(capacity).unwrap())
-                    as *mut &'grammar Rc<GrammarNode>
-            },
-            node_type: unsafe {
-                alloc(Layout::array::<SoaNodeType>(capacity).unwrap()) as *mut SoaNodeType
-            },
-            union_pointer_0: unsafe {
-                alloc(Layout::array::<MaybeUninit<FatPointer>>(capacity).unwrap())
-                    as *mut MaybeUninit<FatPointer>
-            },
+            num_exits: calloc!(usize, capacity),
+            grammar: calloc!(&'grammar Rc<GrammarNode>, capacity),
+            node_type: calloc!(SoaGcflobddNodeType, capacity),
+            union_pointer_0: calloc!(MaybeUninit<FatPointer>, capacity),
         }
     }
 
-    unsafe fn malloc(&mut self, capacity: usize) {
+    unsafe fn calloc(&mut self, capacity: usize) {
         debug_assert!(capacity > 0);
-        debug_assert_eq!(self.reference_count, null_mut());
         debug_assert_eq!(self.num_exits, null_mut());
         debug_assert_eq!(self.grammar, null_mut());
         debug_assert_eq!(self.node_type, null_mut());
         debug_assert_eq!(self.union_pointer_0, null_mut());
-        self.reference_count =
-            unsafe { alloc(Layout::array::<usize>(capacity).unwrap_unchecked()) as *mut usize };
-        self.num_exits =
-            unsafe { alloc(Layout::array::<usize>(capacity).unwrap_unchecked()) as *mut usize };
-        self.grammar = unsafe {
-            alloc(Layout::array::<&'grammar Rc<GrammarNode>>(capacity).unwrap_unchecked())
-                as *mut &'grammar Rc<GrammarNode>
-        };
-        self.node_type = unsafe {
-            alloc(Layout::array::<SoaNodeType>(capacity).unwrap_unchecked()) as *mut SoaNodeType
-        };
-        self.union_pointer_0 = unsafe {
-            alloc(Layout::array::<MaybeUninit<FatPointer>>(capacity).unwrap_unchecked())
-                as *mut MaybeUninit<FatPointer>
-        };
+        self.num_exits = calloc!(usize, capacity);
+        self.grammar = calloc!(&'grammar Rc<GrammarNode>, capacity);
+        self.node_type = calloc!(SoaGcflobddNodeType, capacity);
+        self.union_pointer_0 = calloc!(MaybeUninit<FatPointer>, capacity);
     }
 
     unsafe fn realloc(&mut self, old_capacity: usize, new_capacity: usize) {
-        self.reference_count = unsafe {
-            realloc(
-                self.reference_count as *mut u8,
-                Layout::array::<usize>(old_capacity).unwrap_unchecked(),
-                new_capacity * std::mem::size_of::<usize>(),
-            ) as *mut usize
-        };
-        self.num_exits = unsafe {
-            realloc(
-                self.num_exits as *mut u8,
-                Layout::array::<usize>(old_capacity).unwrap_unchecked(),
-                new_capacity * std::mem::size_of::<usize>(),
-            ) as *mut usize
-        };
-        self.grammar = unsafe {
-            realloc(
-                self.grammar as *mut u8,
-                Layout::array::<&'grammar Rc<GrammarNode>>(old_capacity).unwrap_unchecked(),
-                new_capacity * std::mem::size_of::<&'grammar Rc<GrammarNode>>(),
-            ) as *mut &'grammar Rc<GrammarNode>
-        };
-        self.node_type = unsafe {
-            realloc(
-                self.node_type as *mut u8,
-                Layout::array::<SoaNodeType>(old_capacity).unwrap_unchecked(),
-                new_capacity * std::mem::size_of::<SoaNodeType>(),
-            ) as *mut SoaNodeType
-        };
-        self.union_pointer_0 = unsafe {
-            realloc(
-                self.union_pointer_0 as *mut u8,
-                Layout::array::<MaybeUninit<FatPointer>>(old_capacity).unwrap_unchecked(),
-                new_capacity * std::mem::size_of::<MaybeUninit<FatPointer>>(),
-            ) as *mut MaybeUninit<FatPointer>
-        };
+        self.num_exits = realloc!(usize, self.num_exits, old_capacity, new_capacity);
+        self.grammar = realloc!(
+            &'grammar Rc<GrammarNode>,
+            self.grammar,
+            old_capacity,
+            new_capacity
+        );
+        self.node_type = realloc!(
+            SoaGcflobddNodeType,
+            self.node_type,
+            old_capacity,
+            new_capacity
+        );
+        self.union_pointer_0 = realloc!(
+            MaybeUninit<FatPointer>,
+            self.union_pointer_0,
+            old_capacity,
+            new_capacity
+        );
     }
-    unsafe fn set(&mut self, index: usize, node: Self::UnderlyingType) {
-        unsafe { self.reference_count.add(index).write(node.reference_count) };
-        unsafe { self.num_exits.add(index).write(node.inner.num_exits) };
-        unsafe { self.grammar.add(index).write(node.inner.grammar) };
-        match node.inner.value.node {
+    unsafe fn set(&mut self, index: usize, node: Self::ValueType) {
+        unsafe { self.num_exits.add(index).write(node.num_exits) };
+        unsafe { self.grammar.add(index).write(node.grammar) };
+        match node.node {
             GcflobddNodeType::DontCare => {
-                unsafe { self.node_type.add(index).write(SoaNodeType::DontCare) };
+                unsafe {
+                    self.node_type
+                        .add(index)
+                        .write(SoaGcflobddNodeType::DontCare)
+                };
                 // don't need to write for DontCare
                 // unsafe { self.union_pointer_0.add(index).write((0, 0, 0)) };
             }
             super::node::GcflobddNodeType::Fork => {
-                unsafe { self.node_type.add(index).write(SoaNodeType::Fork) };
+                unsafe { self.node_type.add(index).write(SoaGcflobddNodeType::Fork) };
                 // don't need to write for Fork
                 // unsafe { self.union_pointer_0.add(index).write((0, 0, 0)) };
             }
             super::node::GcflobddNodeType::Internal(internal_node) => {
-                unsafe { self.node_type.add(index).write(SoaNodeType::Internal) };
+                unsafe {
+                    self.node_type
+                        .add(index)
+                        .write(SoaGcflobddNodeType::Internal)
+                };
                 unsafe {
                     (self.union_pointer_0.add(index) as *mut Vec<Vec<Connection>>)
                         .write(internal_node.connections)
                 };
             }
             super::node::GcflobddNodeType::Bdd(bdd) => {
-                unsafe { self.node_type.add(index).write(SoaNodeType::Bdd) };
+                unsafe { self.node_type.add(index).write(SoaGcflobddNodeType::Bdd) };
                 unsafe { (self.union_pointer_0.add(index) as *mut Bdd).write(bdd) };
             }
         }
     }
-    unsafe fn get(&self, index: usize) -> Self::ReferenceType {
-        RefRchGcflobddNode {
+    unsafe fn get<'a>(&'a self, index: usize) -> Self::ViewType<'a> {
+        Self::ViewType {
             num_exits: unsafe { self.num_exits.add(index).read() },
             grammar: unsafe { self.grammar.add(index).read() },
-            node_type: unsafe { self.node_type.add(index).read() },
-            union_pointer_0: unsafe { self.union_pointer_0.add(index).read() },
+            node: match unsafe { self.node_type.add(index).read() } {
+                SoaGcflobddNodeType::DontCare => RefGcflobddNodeType::DontCare,
+                SoaGcflobddNodeType::Fork => RefGcflobddNodeType::Fork,
+                SoaGcflobddNodeType::Internal => RefGcflobddNodeType::Internal(unsafe {
+                    (self.union_pointer_0.add(index) as *const InternalNode)
+                        .as_ref()
+                        .unwrap_unchecked()
+                }),
+                SoaGcflobddNodeType::Bdd => RefGcflobddNodeType::Bdd(unsafe {
+                    (self.union_pointer_0.add(index) as *const Bdd)
+                        .as_ref()
+                        .unwrap_unchecked()
+                }),
+            },
         }
     }
     unsafe fn drop_at(&mut self, index: usize) {
@@ -358,13 +393,11 @@ impl<'grammar> Soa for SoaNode<'grammar> {
         // Only the union payload may own heap data, and only for Internal / Bdd.
         let node_type = unsafe { self.node_type.add(index).read() };
         match node_type {
-            SoaNodeType::DontCare | SoaNodeType::Fork => {}
-            SoaNodeType::Internal => unsafe {
-                std::ptr::drop_in_place(
-                    self.union_pointer_0.add(index) as *mut Vec<Vec<Connection>>,
-                );
+            SoaGcflobddNodeType::DontCare | SoaGcflobddNodeType::Fork => {}
+            SoaGcflobddNodeType::Internal => unsafe {
+                std::ptr::drop_in_place(self.union_pointer_0.add(index) as *mut InternalNode);
             },
-            SoaNodeType::Bdd => unsafe {
+            SoaGcflobddNodeType::Bdd => unsafe {
                 std::ptr::drop_in_place(self.union_pointer_0.add(index) as *mut Bdd);
             },
         }
@@ -403,7 +436,7 @@ impl<SOA: Soa> SoaVec<SOA> {
         }
         if self.capacity == 0 {
             unsafe {
-                self.soa.malloc(new_cap);
+                self.soa.calloc(new_cap);
             }
         } else {
             unsafe {
@@ -421,7 +454,7 @@ impl<SOA: Soa> SoaVec<SOA> {
         }
         self.capacity = self.len;
     }
-    fn push(&mut self, node: SOA::UnderlyingType) {
+    fn push(&mut self, node: SOA::ValueType) {
         if self.len == self.capacity {
             self.grow();
         }
@@ -430,13 +463,32 @@ impl<SOA: Soa> SoaVec<SOA> {
         };
         self.len += 1;
     }
-    unsafe fn set(&mut self, index: usize, node: SOA::UnderlyingType) {
+    unsafe fn set(&mut self, index: usize, node: SOA::ValueType) {
         unsafe {
             self.soa.set(index, node);
         };
     }
-    unsafe fn get(&self, index: usize) -> SOA::ReferenceType {
-        unsafe { self.soa.get(index) }
+    /// Returns a view of the slot at `index`.
+    ///
+    /// The returned view's lifetime `'any` is decoupled from the borrow of
+    /// `&self`: the caller picks it. This lets a caller hold a view tied to a
+    /// longer outer borrow (e.g. `&'a mut self`) while the transient immutable
+    /// reborrow of `self` used to produce the view ends immediately, so a
+    /// subsequent `&mut` operation on the same structure is permitted.
+    ///
+    /// # Safety
+    /// The slot at `index` must be initialised, and the underlying storage
+    /// must remain valid (not freed, reallocated, or overwritten) for the
+    /// entire duration of `'any`.
+    unsafe fn get<'any>(&self, index: usize) -> SOA::ViewType<'any> {
+        let short: SOA::ViewType<'_> = unsafe { self.soa.get(index) };
+        // SAFETY: `SOA::ViewType<'_>` and `SOA::ViewType<'any>` have identical
+        // layout — Rust erases lifetimes before codegen. The caller guarantees
+        // the underlying data outlives `'any`.
+        unsafe {
+            let md = std::mem::ManuallyDrop::new(short);
+            std::ptr::read(&*md as *const SOA::ViewType<'_> as *const SOA::ViewType<'any>)
+        }
     }
 }
 
@@ -450,7 +502,7 @@ impl<SOA: Soa> SoaAllocator<SOA> {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn malloc(&mut self, value: SOA::UnderlyingType) -> usize {
+    pub fn malloc(&mut self, value: SOA::ValueType) -> usize {
         if let Some(index) = self.free_list.pop_front() {
             // Slot was drop_at'd when freed, so writing here is correct: no
             // previous occupant to drop.
@@ -494,17 +546,38 @@ impl SoaAllocatorHashTable {
     }
 }
 
-pub struct SoaNodeTable<T: Soa> where T::UnderlyingType: std::hash::Hash {
+#[derive(Debug)]
+pub struct SoaNodeTable<T: Soa>
+where
+    T::ValueType: std::hash::Hash,
+{
     hash_table: SoaAllocatorHashTable,
-    allocation: SoaAllocator<SoaHashTableValue<T>>,
+    allocation: SoaAllocator<SoaHashSetValue<T>>,
 }
 
-impl<T: Soa> SoaNodeTable<T> where T::UnderlyingType: std::hash::Hash {
-    pub fn new() -> Self {
+impl<T: Soa> Default for SoaNodeTable<T>
+where
+    T::ValueType: std::hash::Hash,
+{
+    fn default() -> Self {
         Self {
             hash_table: SoaAllocatorHashTable::new(),
             allocation: SoaAllocator::new(),
         }
+    }
+}
+
+impl<T: Soa> SoaNodeTable<T>
+where
+    T::ValueType: std::hash::Hash,
+{
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.hash_table.len
     }
 
     /// Rehash in place. Module-private because correctness depends on the
@@ -576,10 +649,21 @@ impl<T: Soa> SoaNodeTable<T> where T::UnderlyingType: std::hash::Hash {
 }
 impl<T: Soa> SoaNodeTable<T>
 where
-    T::ReferenceType: Eq,
-    T::UnderlyingType: std::hash::Hash,
+    T::ValueType: std::hash::Hash,
 {
-    pub fn get_index(&self, hash: u64, value: T::ReferenceType) -> Option<usize> {
+    #[inline]
+    pub unsafe fn get_view<'a>(&'a self, index: usize) -> HashSetValueView<T::ViewType<'a>> {
+        unsafe { self.allocation.soa.get(index) }
+    }
+}
+impl<T: Soa> SoaNodeTable<T>
+where
+    T::ValueType: std::hash::Hash,
+{
+    pub fn get_index<'a>(&'a self, hash: u64, value: T::RefType<'a>) -> Option<usize>
+    where
+        T::ViewType<'a>: PartialEq<T::RefType<'a>>,
+    {
         let mut entry = self.hash_table.buckets[(hash & self.hash_table.mask) as usize];
         while entry != -1 {
             let candidate = unsafe { self.allocation.soa.get(entry as usize) };
@@ -593,10 +677,12 @@ where
 }
 impl<T: Soa> SoaNodeTable<T>
 where
-    T::ReferenceType: PartialEq<T::UnderlyingType>,
-    T::UnderlyingType: std::hash::Hash,
+    T::ValueType: std::hash::Hash,
 {
-    pub fn set(&mut self, value: HashCached<T::UnderlyingType>) -> usize {
+    pub fn insert<'a>(&'a mut self, value: HashCached<T::ValueType>) -> usize
+    where
+        T::ViewType<'a>: PartialEq<T::ValueType>,
+    {
         // Grow when 75% of buckets are filled
         let hash = value.hash_code();
         if self.hash_table.buckets_filled >= self.hash_table.threshold {
@@ -607,9 +693,7 @@ where
         let mut entry = self.hash_table.buckets[bucket_idx];
 
         if entry == -1 {
-            let slot = self
-                .allocation
-                .malloc(value);
+            let slot = self.allocation.malloc(value);
             self.hash_table.buckets[bucket_idx] = slot as isize;
             unsafe { self.allocation.soa.soa.next.add(slot).write(-1) };
             self.hash_table.buckets_filled += 1;
@@ -627,9 +711,7 @@ where
             entry = candidate.next;
         }
 
-        let slot = self
-            .allocation
-            .malloc(value);
+        let slot = self.allocation.malloc(value);
 
         unsafe {
             *(self.allocation.soa.soa.next.add(last_entry as usize) as *mut isize) = slot as isize;
@@ -645,34 +727,28 @@ where
 mod tests {
     use super::*;
     impl Soa for *mut usize {
-        type UnderlyingType = usize;
-
-        type ReferenceType = usize;
+        type ValueType = usize;
+        type RefType<'a> = usize;
+        type ViewType<'a> = usize;
 
         fn with_capacity(capacity: usize) -> Self {
             debug_assert!(capacity > 0);
-            unsafe { alloc(Layout::array::<usize>(capacity).unwrap()) as *mut usize }
+            calloc!(usize, capacity)
         }
 
-        unsafe fn malloc(&mut self, capacity: usize) {
+        unsafe fn calloc(&mut self, capacity: usize) {
             debug_assert!(capacity > 0);
-            *self = unsafe { alloc(Layout::array::<usize>(capacity).unwrap()) as *mut usize };
+            *self = calloc!(usize, capacity);
         }
 
         unsafe fn realloc(&mut self, old_capacity: usize, new_capacity: usize) {
-            *self = unsafe {
-                realloc(
-                    *self as *mut u8,
-                    Layout::array::<usize>(old_capacity).unwrap_unchecked(),
-                    new_capacity * std::mem::size_of::<usize>(),
-                ) as *mut usize
-            };
+            *self = realloc!(usize, *self, old_capacity, new_capacity);
         }
 
-        unsafe fn set(&mut self, index: usize, node: Self::UnderlyingType) {
+        unsafe fn set(&mut self, index: usize, node: Self::ValueType) {
             unsafe { self.add(index).write(node) };
         }
-        unsafe fn get(&self, index: usize) -> Self::ReferenceType {
+        unsafe fn get<'a>(&'a self, index: usize) -> Self::RefType<'a> {
             unsafe { self.add(index).read() }
         }
         unsafe fn drop_at(&mut self, _index: usize) {
@@ -680,8 +756,9 @@ mod tests {
         }
     }
     impl Soa for (*mut usize, *mut usize) {
-        type UnderlyingType = (usize, usize);
-        type ReferenceType = (usize, usize);
+        type ValueType = (usize, usize);
+        type RefType<'a> = (usize, usize);
+        type ViewType<'a> = (usize, usize);
 
         fn with_capacity(capacity: usize) -> Self {
             debug_assert!(capacity > 0);
@@ -693,7 +770,7 @@ mod tests {
             }
         }
 
-        unsafe fn malloc(&mut self, capacity: usize) {
+        unsafe fn calloc(&mut self, capacity: usize) {
             debug_assert!(capacity > 0);
             *self = unsafe {
                 (
@@ -720,12 +797,12 @@ mod tests {
             };
         }
 
-        unsafe fn set(&mut self, index: usize, node: Self::UnderlyingType) {
+        unsafe fn set(&mut self, index: usize, node: Self::ValueType) {
             unsafe { self.0.add(index).write(node.0) };
 
             unsafe { self.1.add(index).write(node.1) };
         }
-        unsafe fn get(&self, index: usize) -> Self::ReferenceType {
+        unsafe fn get<'a>(&'a self, index: usize) -> Self::ViewType<'a> {
             (unsafe { self.0.add(index).read() }, unsafe {
                 self.1.add(index).read()
             })
@@ -784,11 +861,11 @@ mod tests {
     #[test]
     fn test_hash_table() {
         let mut hash_table = SoaNodeTable::<(*mut usize, *mut usize)>::new();
-        
+
         // Test basic set and get
         let val1 = HashCached::new((0, 1));
         let hash1 = val1.hash_code();
-        let idx1 = hash_table.set(val1);
+        let idx1 = hash_table.insert(val1);
         assert_eq!(idx1, 0);
         assert_eq!(hash_table.get_index(hash1, (0, 1)), Some(0));
         assert_eq!(unsafe { hash_table.allocation.soa.get(0) }.inner, (0, 1));
@@ -798,7 +875,7 @@ mod tests {
 
         // Test setting identical value (should return existing index)
         let val1_dup = HashCached::new((0, 1));
-        let idx1_dup = hash_table.set(val1_dup);
+        let idx1_dup = hash_table.insert(val1_dup);
         assert_eq!(idx1_dup, 0);
         assert_eq!(hash_table.hash_table.len, 1);
 
@@ -806,21 +883,21 @@ mod tests {
         for i in 1..10 {
             let val = HashCached::new((i, i + 1));
             let hash = val.hash_code();
-            let idx = hash_table.set(val);
+            let idx = hash_table.insert(val);
             assert_eq!(idx, i as usize);
             assert_eq!(hash_table.get_index(hash, (i, i + 1)), Some(i as usize));
         }
-        
+
         assert_eq!(hash_table.hash_table.len, 10);
         assert!(hash_table.hash_table.buckets.len() > 4); // Initial capacity is 4
-        
+
         // Verify old items still exist after resize
         for i in 0..10 {
             let val = HashCached::new((i, i + 1));
             let hash = val.hash_code();
             assert_eq!(hash_table.get_index(hash, (i, i + 1)), Some(i as usize));
         }
-        
+
         // Add more items to test free list and reuse (if applicable through allocation)
         // Note: SoaNodeTable doesn't have a remove/free method exposed yet, but we test
         // the collision resolution path when elements have the same bucket but different hash/values.
@@ -942,33 +1019,24 @@ mod tests {
             }
         }
         impl Soa for DropCounterSoa {
-            type UnderlyingType = DropCounter;
-            type ReferenceType = ();
+            type ValueType = DropCounter;
+            type RefType<'a> = ();
+            type ViewType<'a> = ();
             fn with_capacity(capacity: usize) -> Self {
                 debug_assert!(capacity > 0);
-                Self(unsafe {
-                    alloc(Layout::array::<DropCounter>(capacity).unwrap()) as *mut DropCounter
-                })
+                Self(calloc!(DropCounter, capacity))
             }
-            unsafe fn malloc(&mut self, capacity: usize) {
+            unsafe fn calloc(&mut self, capacity: usize) {
                 debug_assert!(capacity > 0);
-                self.0 = unsafe {
-                    alloc(Layout::array::<DropCounter>(capacity).unwrap()) as *mut DropCounter
-                };
+                self.0 = calloc!(DropCounter, capacity);
             }
             unsafe fn realloc(&mut self, old_capacity: usize, new_capacity: usize) {
-                self.0 = unsafe {
-                    realloc(
-                        self.0 as *mut u8,
-                        Layout::array::<DropCounter>(old_capacity).unwrap_unchecked(),
-                        new_capacity * std::mem::size_of::<DropCounter>(),
-                    ) as *mut DropCounter
-                };
+                self.0 = realloc!(DropCounter, self.0, old_capacity, new_capacity);
             }
-            unsafe fn set(&mut self, index: usize, node: Self::UnderlyingType) {
+            unsafe fn set(&mut self, index: usize, node: Self::ValueType) {
                 unsafe { self.0.add(index).write(node) };
             }
-            unsafe fn get(&self, _index: usize) -> Self::ReferenceType {}
+            unsafe fn get<'a>(&'a self, _index: usize) -> Self::ViewType<'a> {}
             unsafe fn drop_at(&mut self, index: usize) {
                 unsafe { std::ptr::drop_in_place(self.0.add(index)) };
             }
@@ -976,17 +1044,27 @@ mod tests {
 
         let counter = Rc::new(Cell::new(0usize));
         let mut alloc: SoaAllocator<DropCounterSoa> = SoaAllocator::new();
-        let i0 = alloc.malloc(DropCounter { counter: counter.clone() });
-        let i1 = alloc.malloc(DropCounter { counter: counter.clone() });
+        let i0 = alloc.malloc(DropCounter {
+            counter: counter.clone(),
+        });
+        let i1 = alloc.malloc(DropCounter {
+            counter: counter.clone(),
+        });
         assert_eq!(counter.get(), 0, "no drops yet");
 
         alloc.free(i0);
         assert_eq!(counter.get(), 1, "free(i0) must drop the stored value");
 
         // Reusing the slot must not double-drop.
-        let reused = alloc.malloc(DropCounter { counter: counter.clone() });
+        let reused = alloc.malloc(DropCounter {
+            counter: counter.clone(),
+        });
         assert_eq!(reused, i0);
-        assert_eq!(counter.get(), 1, "malloc into freed slot must not drop anything");
+        assert_eq!(
+            counter.get(),
+            1,
+            "malloc into freed slot must not drop anything"
+        );
 
         alloc.free(i1);
         alloc.free(reused);
@@ -1011,7 +1089,7 @@ mod tests {
             .collect();
 
         for (hash, payload) in &entries {
-            let idx = t.set(HashCached::with_hash(*payload, *hash));
+            let idx = t.insert(HashCached::with_hash(*payload, *hash));
             assert_eq!(t.get_index(*hash, *payload), Some(idx));
         }
 
@@ -1023,7 +1101,7 @@ mod tests {
         // And duplicate inserts return the existing slot:
         for (hash, payload) in &entries {
             let original = t.get_index(*hash, *payload).unwrap();
-            let again = t.set(HashCached::with_hash(*payload, *hash));
+            let again = t.insert(HashCached::with_hash(*payload, *hash));
             assert_eq!(again, original);
         }
 
@@ -1035,7 +1113,7 @@ mod tests {
         // Same hash as stored entry but different payload → get_index must return None.
         let mut t = SoaNodeTable::<(*mut usize, *mut usize)>::new();
         let h = 0xDEAD_BEEFu64;
-        t.set(HashCached::with_hash((1, 2), h));
+        t.insert(HashCached::with_hash((1, 2), h));
         assert_eq!(t.get_index(h, (1, 2)), Some(0));
         assert_eq!(t.get_index(h, (1, 3)), None);
         assert_eq!(t.get_index(h, (2, 2)), None);
@@ -1049,7 +1127,7 @@ mod tests {
             let v = (i, i.wrapping_mul(31));
             let hc = HashCached::new(v);
             let hash = hc.hash_code();
-            let idx = t.set(hc);
+            let idx = t.insert(hc);
             assert_eq!(idx, i, "first insert of {:?} should get next slot", v);
             assert_eq!(t.get_index(hash, v), Some(i));
         }
@@ -1057,12 +1135,7 @@ mod tests {
         // Several resizes must have occurred beyond the initial 8-bucket grow.
         assert!(t.hash_table.buckets.len() >= 16);
         // buckets_filled must never exceed the number of non-empty buckets.
-        let filled_actual = t
-            .hash_table
-            .buckets
-            .iter()
-            .filter(|&&b| b != -1)
-            .count();
+        let filled_actual = t.hash_table.buckets.iter().filter(|&&b| b != -1).count();
         assert_eq!(t.hash_table.buckets_filled, filled_actual);
 
         // Every entry still findable after all those resizes.
@@ -1076,7 +1149,7 @@ mod tests {
         for i in 0..N {
             let v = (i, i.wrapping_mul(31));
             let hash = HashCached::new(v).hash_code();
-            let again = t.set(HashCached::with_hash(v, hash));
+            let again = t.insert(HashCached::with_hash(v, hash));
             assert_eq!(again, i);
         }
         assert_eq!(t.hash_table.len, N);
@@ -1088,7 +1161,7 @@ mod tests {
         const N: usize = 64;
         for i in 0..N {
             let v = (i, i + 1);
-            t.set(HashCached::new(v));
+            t.insert(HashCached::new(v));
         }
         let big_cap = t.hash_table.buckets.len();
         assert!(big_cap >= 16);
@@ -1106,12 +1179,7 @@ mod tests {
         }
 
         // Invariant: buckets_filled matches reality.
-        let filled_actual = t
-            .hash_table
-            .buckets
-            .iter()
-            .filter(|&&b| b != -1)
-            .count();
+        let filled_actual = t.hash_table.buckets.iter().filter(|&&b| b != -1).count();
         assert_eq!(t.hash_table.buckets_filled, filled_actual);
     }
 
@@ -1135,9 +1203,9 @@ mod tests {
         let a = (1usize, 10usize);
         let b = (2usize, 20usize);
         let c = (3usize, 30usize);
-        let ia = t.set(HashCached::with_hash(a, h_a));
-        let ib = t.set(HashCached::with_hash(b, h_b));
-        let ic = t.set(HashCached::with_hash(c, h_c));
+        let ia = t.insert(HashCached::with_hash(a, h_a));
+        let ib = t.insert(HashCached::with_hash(b, h_b));
+        let ic = t.insert(HashCached::with_hash(c, h_c));
 
         // Walk the chain starting at the bucket head:
         let mut walk = Vec::new();
@@ -1170,12 +1238,12 @@ mod tests {
         // Force each insert into a distinct bucket by picking hashes 0,1,2,3
         // under the initial mask = 3.
         for (hash, bucket) in [(0u64, 0usize), (1, 1), (2, 2)] {
-            t.set(HashCached::with_hash((bucket, bucket), hash));
+            t.insert(HashCached::with_hash((bucket, bucket), hash));
             assert_eq!(t.hash_table.buckets.len(), 4);
         }
         // Fourth insert must push buckets_filled to 3, which hits the threshold
         // at the top of `set` and triggers grow BEFORE the insert lands.
-        t.set(HashCached::with_hash((3, 3), 3));
+        t.insert(HashCached::with_hash((3, 3), 3));
         assert_eq!(t.hash_table.buckets.len(), 8);
         assert_eq!(t.hash_table.len, 4);
     }

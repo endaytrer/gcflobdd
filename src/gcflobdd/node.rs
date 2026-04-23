@@ -4,6 +4,7 @@ use crate::{
         connection::{Connection, ConnectionPair, ConnectionT},
         context::Context,
         return_map::inverse_lookup,
+        soa::{RefGcflobddNode, RefGcflobddNodeType, SoaGcflobddNodeType},
     },
     grammar::{GrammarNode, GrammarNodeType},
     utils::hash_cache::Rch,
@@ -13,6 +14,7 @@ use rustc_hash::{FxHashMap as HashMap, FxHasher as DefaultHasher};
 use std::{
     cell::RefCell,
     hash::{Hash, Hasher},
+    marker::PhantomData,
     mem::MaybeUninit,
     rc::Rc,
 };
@@ -117,7 +119,7 @@ impl<'grammar> GcflobddNode<'grammar> {
         i: usize,
         grammar: &'grammar Rc<GrammarNode>,
         context: &RefCell<Context<'grammar>>,
-    ) -> Rch<Self> {
+    ) -> usize {
         let ans = Self {
             num_exits: 2,
             grammar,
@@ -131,11 +133,13 @@ impl<'grammar> GcflobddNode<'grammar> {
                                 *p -= gn.num_vars;
                                 connections.push(vec![Connection::new_sequential(
                                     Self::mk_no_distinction(gn, context),
+                                    1,
                                     context,
                                 )]);
                             } else {
                                 connections.push(vec![Connection::new_sequential(
                                     Self::mk_distinction(*p, gn, context),
+                                    2,
                                     context,
                                 )]);
                                 position.take();
@@ -168,7 +172,7 @@ impl<'grammar> GcflobddNode<'grammar> {
     pub fn mk_no_distinction(
         grammar: &'grammar Rc<GrammarNode>,
         context: &RefCell<Context<'grammar>>,
-    ) -> Rch<Self> {
+    ) -> usize {
         let ans = Self {
             num_exits: 1,
             grammar,
@@ -176,20 +180,24 @@ impl<'grammar> GcflobddNode<'grammar> {
         };
         context.borrow_mut().add_gcflobdd_node(ans)
     }
-    pub fn find_one_path_to(&self, value: usize) -> Vec<Option<bool>> {
-        if self.num_exits == 1 {
+    pub fn find_one_path_to<'a>(
+        this: RefGcflobddNode<'a, 'grammar>,
+        value: usize,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Vec<Option<bool>> {
+        if this.num_exits == 1 {
             debug_assert_eq!(value, 0);
-            return vec![None; self.grammar.num_vars];
+            return vec![None; this.grammar.num_vars];
         }
-        match &self.node {
-            GcflobddNodeType::Internal(internal_node) => {
-                internal_node.find_one_path_to(value, 0, 0).unwrap()
+        match this.node {
+            RefGcflobddNodeType::Internal(internal_node) => internal_node
+                .find_one_path_to(value, 0, 0, context)
+                .unwrap(),
+            RefGcflobddNodeType::Bdd(bdd) => {
+                bdd.find_one_path_to(value, this.grammar.num_vars).unwrap()
             }
-            GcflobddNodeType::Bdd(bdd) => {
-                bdd.find_one_path_to(value, self.grammar.num_vars).unwrap()
-            }
-            GcflobddNodeType::DontCare => unreachable!(),
-            GcflobddNodeType::Fork => {
+            RefGcflobddNodeType::DontCare => unreachable!(),
+            RefGcflobddNodeType::Fork => {
                 if value == 0 {
                     vec![Some(false)]
                 } else {
@@ -199,192 +207,37 @@ impl<'grammar> GcflobddNode<'grammar> {
         }
     }
 
-    pub fn mk_balanced_hadamard_voc12(
-        level: usize,
-        grammar: &'grammar Rc<GrammarNode>,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Rch<Self> {
-        if level == 2 {
-            return Self::mk_balanced_hadamard_voc12_2(grammar, context);
-        }
-
-        let GrammarNodeType::Internal(grammar_nodes) = &grammar.node else {
-            unreachable!("mk_hardamard_voc12 should have two groupings")
-        };
-        let [a, b] = &grammar_nodes[..] else {
-            unreachable!("mk_hardamard_voc12 should have two groupings")
-        };
-        let conn_a = Self::mk_balanced_hadamard_voc12(level - 1, a, context);
-        let conn_b = Self::mk_balanced_hadamard_voc12(level - 1, b, context);
-        let node_type = GcflobddNodeType::Internal(InternalNode {
-            connections: vec![
-                vec![Connection::new_sequential(conn_a, context)],
-                vec![
-                    Connection::new_sequential(conn_b.clone(), context),
-                    Connection::new(conn_b, vec![1, 0], context),
-                ],
-            ],
-        });
-        context.borrow_mut().add_gcflobdd_node(Self {
-            num_exits: 2,
-            grammar,
-            node: node_type,
-        })
-    }
-
-    pub fn mk_balanced_hadamard_voc13(
-        level: usize,
-        grammar: &'grammar Rc<GrammarNode>,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Rch<Self> {
-        if level == 2 {
-            return Self::mk_hadamard_voc13_2(grammar, context);
-        }
-
-        let GrammarNodeType::Internal(grammar_nodes) = &grammar.node else {
-            unreachable!("mk_hardamard_voc13 should have two groupings")
-        };
-        let [a, b] = &grammar_nodes[..] else {
-            unreachable!("mk_hardamard_voc13 should have two groupings")
-        };
-        let conn_a = Self::mk_balanced_hadamard_voc13(level - 1, a, context);
-        let conn_b = Self::mk_balanced_hadamard_voc13(level - 1, b, context);
-        let node_type = GcflobddNodeType::Internal(InternalNode {
-            connections: vec![
-                vec![Connection::new_sequential(conn_a, context)],
-                vec![
-                    Connection::new_sequential(conn_b.clone(), context),
-                    Connection::new(conn_b, vec![1, 0], context),
-                ],
-            ],
-        });
-        context.borrow_mut().add_gcflobdd_node(Self {
-            num_exits: 2,
-            grammar,
-            node: node_type,
-        })
-    }
-    fn mk_balanced_hadamard_voc12_2(
-        grammar: &'grammar Rc<GrammarNode>,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Rch<Self> {
-        let GrammarNodeType::Internal(grammar_nodes) = &grammar.node else {
-            unreachable!("mk_hardamard_voc12_2 should have 4 variables with two groupings")
-        };
-        let [a, b] = &grammar_nodes[..] else {
-            unreachable!("mk_hardamard_voc12_2 should have 4 variables with two groupings")
-        };
-        let a_conn = Self::mk_balanced_hadamard_2(a, context);
-        let b_conn = Self::mk_no_distinction(b, context);
-        let node_type = GcflobddNodeType::Internal(InternalNode {
-            connections: vec![
-                vec![Connection::new_sequential(a_conn, context)],
-                vec![
-                    Connection::new_sequential(b_conn.clone(), context),
-                    Connection::new_sequential(b_conn, context),
-                ],
-            ],
-        });
-        context.borrow_mut().add_gcflobdd_node(Self {
-            num_exits: 2,
-            grammar,
-            node: node_type,
-        })
-    }
-
-    fn mk_hadamard_voc13_2(
-        grammar: &'grammar Rc<GrammarNode>,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Rch<Self> {
-        let GrammarNodeType::Internal(grammar_nodes) = &grammar.node else {
-            unreachable!("mk_hardamard_voc12_2 should have 4 variables with two groupings")
-        };
-        let [a, b] = &grammar_nodes[..] else {
-            unreachable!("mk_hardamard_voc12_2 should have 4 variables with two groupings")
-        };
-        let a_conn = Self::mk_distinction(0, a, context);
-        let b0_conn = Self::mk_no_distinction(b, context);
-        let b1_conn = Self::mk_distinction(0, b, context);
-        let node_type = GcflobddNodeType::Internal(InternalNode {
-            connections: vec![
-                vec![Connection::new_sequential(a_conn, context)],
-                vec![
-                    Connection::new_sequential(b0_conn, context),
-                    Connection::new_sequential(b1_conn, context),
-                ],
-            ],
-        });
-        context.borrow_mut().add_gcflobdd_node(Self {
-            num_exits: 3,
-            grammar,
-            node: node_type,
-        })
-    }
-
-    fn mk_balanced_hadamard_2(
-        grammar: &'grammar Rc<GrammarNode>,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Rch<Self> {
-        let node_type = match &grammar.node {
-            GrammarNodeType::Internal(grammar_nodes) => {
-                let [a, b] = &grammar_nodes[..] else {
-                    unreachable!("mk_hadamard_2 should have two variables")
-                };
-                debug_assert!(
-                    matches!(a.node, GrammarNodeType::Terminal),
-                    "mk_hadamard_2 should have two variables"
-                );
-                debug_assert!(
-                    matches!(b.node, GrammarNodeType::Terminal),
-                    "mk_hadamard_2 should have two variables"
-                );
-                let a_conn = Self::mk_distinction(0, a, context);
-                let b0_conn = Self::mk_no_distinction(b, context);
-                let b1_conn = Self::mk_distinction(0, b, context);
-                GcflobddNodeType::Internal(InternalNode {
-                    connections: vec![
-                        vec![Connection::new_sequential(a_conn, context)],
-                        vec![
-                            Connection::new_sequential(b0_conn, context),
-                            Connection::new_sequential(b1_conn, context),
-                        ],
-                    ],
-                })
-            }
-            GrammarNodeType::Bdd(2) => GcflobddNodeType::Bdd(Bdd::mk_hadamard_2(context)),
-            _ => unreachable!("mk_hadamard_2 should have two variables"),
-        };
-        context.borrow_mut().add_gcflobdd_node(Self {
-            num_exits: 2,
-            grammar,
-            node: node_type,
-        })
-    }
-
     pub fn pair_product(
-        lhs: &Rch<Self>,
-        rhs: &Rch<Self>,
+        lhs: usize,
+        rhs: usize,
         context: &RefCell<Context<'grammar>>,
     ) -> ConnectionPair<'grammar> {
         // should be the same grammar
-        debug_assert_eq!(lhs.grammar, rhs.grammar);
+        let context_ref = context.borrow();
+        let lhs_view = unsafe { context_ref.get_gcflobdd_node_view(lhs) };
+        let rhs_view = unsafe { context_ref.get_gcflobdd_node_view(rhs) };
+
+        debug_assert_eq!(lhs_view.inner.grammar, rhs_view.inner.grammar);
         if let Some(t) = context.borrow().get_pair_product_cache(lhs, rhs) {
             return t;
         }
-        let ans = match (&lhs.node, &rhs.node) {
-            (GcflobddNodeType::DontCare, GcflobddNodeType::DontCare) => ConnectionPair {
-                entry_point: Self::mk_no_distinction(lhs.grammar, context),
+        let ans = match (lhs_view.inner.node, rhs_view.inner.node) {
+            (RefGcflobddNodeType::DontCare, RefGcflobddNodeType::DontCare) => ConnectionPair {
+                entry_point: Self::mk_no_distinction(lhs_view.inner.grammar, context),
                 return_map: vec![(0, 0)],
+                phantom: PhantomData,
             },
-            (GcflobddNodeType::DontCare, _) => ConnectionPair {
-                entry_point: rhs.clone(),
-                return_map: (0..rhs.num_exits).map(|i| (0, i)).collect(),
+            (RefGcflobddNodeType::DontCare, _) => ConnectionPair {
+                entry_point: rhs,
+                return_map: (0..rhs_view.inner.num_exits).map(|i| (0, i)).collect(),
+                phantom: PhantomData,
             },
-            (_, GcflobddNodeType::DontCare) => ConnectionPair {
-                entry_point: lhs.clone(),
-                return_map: (0..lhs.num_exits).map(|i| (i, 0)).collect(),
+            (_, RefGcflobddNodeType::DontCare) => ConnectionPair {
+                entry_point: lhs,
+                return_map: (0..lhs_view.inner.num_exits).map(|i| (i, 0)).collect(),
+                phantom: PhantomData,
             },
-            (GcflobddNodeType::Internal(lhs_node), GcflobddNodeType::Internal(rhs_node)) => {
+            (RefGcflobddNodeType::Internal(lhs_node), RefGcflobddNodeType::Internal(rhs_node)) => {
                 let mut connection_pair_list = vec![(0usize, 0usize)];
                 let mut product_connections = Vec::with_capacity(lhs_node.connections.len());
                 let mut exit_lookup = Vec::new();
@@ -393,12 +246,12 @@ impl<'grammar> GcflobddNode<'grammar> {
                     let rhs_connection_list = &rhs_node.connections[i];
 
                     let size_first = if i == lhs_node.connections.len() - 1 {
-                        lhs.num_exits
+                        lhs_view.inner.num_exits
                     } else {
                         lhs_node.connections[i + 1].len()
                     };
                     let size_second = if i == rhs_node.connections.len() - 1 {
-                        rhs.num_exits
+                        rhs_view.inner.num_exits
                     } else {
                         rhs_node.connections[i + 1].len()
                     };
@@ -415,9 +268,10 @@ impl<'grammar> GcflobddNode<'grammar> {
                             let ConnectionPair {
                                 entry_point,
                                 return_map: new_inner_pairs,
+                                ..
                             } = Self::pair_product(
-                                &lhs_connection.entry_point,
-                                &rhs_connection.entry_point,
+                                lhs_connection.entry_point,
+                                rhs_connection.entry_point,
                                 context,
                             );
                             let mut new_outer_pairs = Vec::with_capacity(new_inner_pairs.len());
@@ -437,6 +291,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                             Connection {
                                 entry_point,
                                 return_map: context.borrow_mut().add_return_map(new_outer_pairs),
+                                phantom: PhantomData,
                             }
                         })
                         .collect();
@@ -446,28 +301,36 @@ impl<'grammar> GcflobddNode<'grammar> {
                 ConnectionPair {
                     entry_point: context.borrow_mut().add_gcflobdd_node(Self {
                         num_exits: connection_pair_list.len(),
-                        grammar: lhs.grammar,
+                        grammar: lhs_view.inner.grammar,
                         node: GcflobddNodeType::Internal(InternalNode {
                             connections: product_connections,
                         }),
                     }),
                     return_map: connection_pair_list,
+                    phantom: PhantomData,
                 }
             }
-            (GcflobddNodeType::Bdd(lhs_bdd), GcflobddNodeType::Bdd(rhs_bdd)) => {
-                let product = lhs_bdd.pair_product(rhs_bdd, lhs.num_exits, rhs.num_exits, context);
+            (RefGcflobddNodeType::Bdd(lhs_bdd), RefGcflobddNodeType::Bdd(rhs_bdd)) => {
+                let product = lhs_bdd.pair_product(
+                    rhs_bdd,
+                    lhs_view.inner.num_exits,
+                    rhs_view.inner.num_exits,
+                    context,
+                );
                 ConnectionPair {
                     entry_point: context.borrow_mut().add_gcflobdd_node(Self {
                         num_exits: product.return_map.len(),
-                        grammar: lhs.grammar,
+                        grammar: lhs_view.inner.grammar,
                         node: GcflobddNodeType::Bdd(Bdd(product.entry_point)),
                     }),
                     return_map: product.return_map,
+                    phantom: PhantomData,
                 }
             }
-            (GcflobddNodeType::Fork, GcflobddNodeType::Fork) => ConnectionPair {
+            (RefGcflobddNodeType::Fork, RefGcflobddNodeType::Fork) => ConnectionPair {
                 entry_point: lhs.clone(),
                 return_map: vec![(0, 0), (1, 1)],
+                phantom: PhantomData,
             },
             _ => unreachable!("Invalid configuration for grammar"),
         };
@@ -478,32 +341,37 @@ impl<'grammar> GcflobddNode<'grammar> {
     }
 
     pub fn pair_map(
-        lhs: &Rch<Self>,
-        rhs: &Rch<Self>,
+        lhs: usize,
+        rhs: usize,
         reduce_matrix: &Rch<Vec<usize>>, // should be a ReduceMap if either lhs / rhs is a dont care
         num_exits: usize,                // it's only used in reduce of don't care and normal nodes
         context: &RefCell<Context<'grammar>>,
     ) -> Connection<'grammar> {
+        let context_ref = context.borrow();
+        let lhs_view = unsafe { context_ref.get_gcflobdd_node_view(lhs) };
+        let rhs_view = unsafe { context_ref.get_gcflobdd_node_view(rhs) };
         if num_exits == 1 {
             return Connection {
-                entry_point: Self::mk_no_distinction(lhs.grammar, context),
+                entry_point: Self::mk_no_distinction(lhs_view.inner.grammar, context),
                 return_map: context.borrow_mut().add_return_map(vec![reduce_matrix[0]]),
+                phantom: PhantomData,
             };
         }
         if let Some(t) = context.borrow().get_pair_map_cache(lhs, rhs, reduce_matrix) {
             return t;
         }
 
-        let ans = match (&lhs.node, &rhs.node) {
-            (GcflobddNodeType::DontCare, GcflobddNodeType::DontCare) => {
+        let ans = match (lhs_view.inner.node, rhs_view.inner.node) {
+            (RefGcflobddNodeType::DontCare, RefGcflobddNodeType::DontCare) => {
                 debug_assert_eq!(reduce_matrix.len(), 1);
                 Connection {
-                    entry_point: Self::mk_no_distinction(lhs.grammar, context),
+                    entry_point: Self::mk_no_distinction(lhs_view.inner.grammar, context),
                     return_map: context.borrow_mut().add_return_map(vec![reduce_matrix[0]]),
+                    phantom: PhantomData,
                 }
             }
-            (GcflobddNodeType::DontCare, _) => {
-                debug_assert_eq!(reduce_matrix.len(), rhs.num_exits);
+            (RefGcflobddNodeType::DontCare, _) => {
+                debug_assert_eq!(reduce_matrix.len(), rhs_view.inner.num_exits);
                 Connection::new_sequential(
                     Self::reduce(
                         rhs,
@@ -511,11 +379,12 @@ impl<'grammar> GcflobddNode<'grammar> {
                         num_exits,
                         context,
                     ),
+                    num_exits,
                     context,
                 )
             }
-            (_, GcflobddNodeType::DontCare) => {
-                debug_assert_eq!(reduce_matrix.len(), lhs.num_exits);
+            (_, RefGcflobddNodeType::DontCare) => {
+                debug_assert_eq!(reduce_matrix.len(), lhs_view.inner.num_exits);
                 Connection::new_sequential(
                     Self::reduce(
                         lhs,
@@ -523,27 +392,30 @@ impl<'grammar> GcflobddNode<'grammar> {
                         num_exits,
                         context,
                     ),
+                    num_exits,
                     context,
                 )
             }
-            (GcflobddNodeType::Fork, GcflobddNodeType::Fork) => {
+            (RefGcflobddNodeType::Fork, RefGcflobddNodeType::Fork) => {
                 debug_assert_eq!(reduce_matrix.len(), 4);
                 if reduce_matrix[0] == reduce_matrix[3] {
                     Connection {
-                        entry_point: Self::mk_no_distinction(lhs.grammar, context),
+                        entry_point: Self::mk_no_distinction(lhs_view.inner.grammar, context),
                         return_map: context.borrow_mut().add_return_map(vec![reduce_matrix[0]]),
+                        phantom: PhantomData,
                     }
                 } else {
                     Connection {
-                        entry_point: lhs.clone(),
+                        entry_point: lhs,
                         return_map: context
                             .borrow_mut()
                             .add_return_map(vec![reduce_matrix[0], reduce_matrix[3]]),
+                        phantom: PhantomData,
                     }
                 }
             }
 
-            (GcflobddNodeType::Internal(lhs_node), GcflobddNodeType::Internal(rhs_node)) => {
+            (RefGcflobddNodeType::Internal(lhs_node), RefGcflobddNodeType::Internal(rhs_node)) => {
                 let mut connection_pair_list = vec![(0usize, 0usize)];
                 let mut product_connections = Vec::with_capacity(lhs_node.connections.len());
                 for i in 0..lhs_node.connections.len() - 1 {
@@ -564,9 +436,10 @@ impl<'grammar> GcflobddNode<'grammar> {
                             let ConnectionPair {
                                 entry_point,
                                 return_map: new_inner_pairs,
+                                ..
                             } = Self::pair_product(
-                                &lhs_connection.entry_point,
-                                &rhs_connection.entry_point,
+                                lhs_connection.entry_point,
+                                rhs_connection.entry_point,
                                 context,
                             );
                             let mut new_outer_pairs = Vec::with_capacity(new_inner_pairs.len());
@@ -586,6 +459,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                             Connection {
                                 entry_point,
                                 return_map: context.borrow_mut().add_return_map(new_outer_pairs),
+                                phantom: PhantomData,
                             }
                         })
                         .collect::<Vec<_>>();
@@ -619,7 +493,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                         );
                         for rt_k in rhs_connection.return_map.iter() {
                             for rt_j in lhs_connection.return_map.iter() {
-                                let ans = reduce_matrix[*rt_k * lhs.num_exits + *rt_j];
+                                let ans = reduce_matrix[*rt_k * lhs_view.inner.num_exits + *rt_j];
                                 if connection_exit_lookup[ans] == usize::MAX {
                                     connection_exit_lookup[ans] = inner_value_map.len();
                                     inner_value_map.push(ans);
@@ -634,9 +508,10 @@ impl<'grammar> GcflobddNode<'grammar> {
                         let Connection {
                             entry_point,
                             return_map: inner_return_map,
+                            ..
                         } = Self::pair_map(
-                            &lhs_connection.entry_point,
-                            &rhs_connection.entry_point,
+                            lhs_connection.entry_point,
+                            rhs_connection.entry_point,
                             &inner_reduce_map,
                             inner_value_map.len(),
                             context,
@@ -653,6 +528,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                         let new_connection = Connection {
                             entry_point,
                             return_map: context.borrow_mut().add_return_map(mapped_return_map),
+                            phantom: PhantomData,
                         };
 
                         let mut hasher = DefaultHasher::default();
@@ -669,8 +545,9 @@ impl<'grammar> GcflobddNode<'grammar> {
 
                 if return_map.len() == 1 {
                     Connection {
-                        entry_point: Self::mk_no_distinction(lhs.grammar, context),
+                        entry_point: Self::mk_no_distinction(lhs_view.inner.grammar, context),
                         return_map: context.borrow_mut().add_return_map(return_map),
+                        phantom: PhantomData,
                     }
                 } else {
                     let mut new_connection_list: Vec<MaybeUninit<Vec<Connection<'grammar>>>> =
@@ -722,7 +599,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                                     .map(|x| inverse_lookup[*x])
                                     .collect::<Vec<_>>();
                                 let new_entry = GcflobddNode::reduce(
-                                    &connection.entry_point,
+                                    connection.entry_point,
                                     reduce_map_inner.into(),
                                     new_return_map.len(),
                                     context,
@@ -730,6 +607,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                                 let new_connection = ConnectionT {
                                     entry_point: new_entry,
                                     return_map: context.borrow_mut().add_return_map(new_return_map),
+                                    phantom: PhantomData,
                                 };
                                 let mut hasher = DefaultHasher::default();
                                 new_connection.hash(&mut hasher);
@@ -754,7 +632,7 @@ impl<'grammar> GcflobddNode<'grammar> {
 
                     let entry_point = context.borrow_mut().add_gcflobdd_node(Self {
                         num_exits,
-                        grammar: lhs.grammar,
+                        grammar: lhs_view.inner.grammar,
                         node: GcflobddNodeType::Internal(InternalNode {
                             connections: new_connection_list,
                         }),
@@ -764,30 +642,33 @@ impl<'grammar> GcflobddNode<'grammar> {
                     Connection {
                         entry_point,
                         return_map,
+                        phantom: PhantomData,
                     }
                 }
             }
-            (GcflobddNodeType::Bdd(lhs_bdd), GcflobddNodeType::Bdd(rhs_bdd)) => {
+            (RefGcflobddNodeType::Bdd(lhs_bdd), RefGcflobddNodeType::Bdd(rhs_bdd)) => {
                 let product = lhs_bdd.pair_map(
                     rhs_bdd,
                     reduce_matrix,
-                    lhs.num_exits,
-                    rhs.num_exits,
+                    lhs_view.inner.num_exits,
+                    rhs_view.inner.num_exits,
                     context,
                 );
                 if product.return_map.len() == 1 {
                     Connection {
-                        entry_point: Self::mk_no_distinction(lhs.grammar, context),
+                        entry_point: Self::mk_no_distinction(lhs_view.inner.grammar, context),
                         return_map: product.return_map,
+                        phantom: PhantomData,
                     }
                 } else {
                     Connection {
                         entry_point: context.borrow_mut().add_gcflobdd_node(Self {
                             num_exits: product.return_map.len(),
-                            grammar: lhs.grammar,
+                            grammar: lhs_view.inner.grammar,
                             node: GcflobddNodeType::Bdd(Bdd(product.entry_point)),
                         }),
                         return_map: product.return_map,
+                        phantom: PhantomData,
                     }
                 }
             }
@@ -799,13 +680,15 @@ impl<'grammar> GcflobddNode<'grammar> {
         ans
     }
     pub fn reduce(
-        this: &Rch<Self>,
+        this: usize,
         reduce_map: ReduceMap,
         num_exits: usize,
         context: &RefCell<Context<'grammar>>,
-    ) -> Rch<Self> {
+    ) -> usize {
+        let context_ref = context.borrow();
+        let this_view = unsafe { context_ref.get_gcflobdd_node_view(this) };
         if num_exits == 1 {
-            return Self::mk_no_distinction(this.grammar, context);
+            return Self::mk_no_distinction(this_view.inner.grammar, context);
         }
         // is identity map. This is guaranteed by the generation process.
         if num_exits == reduce_map.len() {
@@ -817,10 +700,10 @@ impl<'grammar> GcflobddNode<'grammar> {
             return t;
         }
         let cache_reduce_map = reduce_map.clone();
-        let ans = match &this.node {
-            GcflobddNodeType::DontCare => context.borrow_mut().get_gcflobdd_node(this).unwrap(),
-            GcflobddNodeType::Fork => context.borrow_mut().get_gcflobdd_node(this).unwrap(),
-            GcflobddNodeType::Internal(internal_node) => {
+        let ans = match this_view.inner.node {
+            RefGcflobddNodeType::DontCare => this,
+            RefGcflobddNodeType::Fork => this,
+            RefGcflobddNodeType::Internal(internal_node) => {
                 // If this is a don't care, the reduce_map should be &[0].
                 // The early return `if num_exits == 1` handles the `reduce_map.iter().all(|x| *x == 0)` case.
                 let mut reduce_map_max = num_exits;
@@ -875,7 +758,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                                 .map(|x| inverse_lookup[*x])
                                 .collect::<Vec<_>>();
                             let new_entry = GcflobddNode::reduce(
-                                &connection.entry_point,
+                                connection.entry_point,
                                 reduce_map_inner.into(),
                                 new_return_map.len(),
                                 context,
@@ -884,6 +767,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                             let new_connection = ConnectionT {
                                 entry_point: new_entry,
                                 return_map: context.borrow_mut().add_return_map(new_return_map),
+                                phantom: PhantomData,
                             };
                             let mut hasher = DefaultHasher::default();
                             new_connection.hash(&mut hasher);
@@ -910,21 +794,21 @@ impl<'grammar> GcflobddNode<'grammar> {
                     node: GcflobddNodeType::Internal(InternalNode {
                         connections: new_connection_list,
                     }),
-                    grammar: this.grammar,
+                    grammar: this_view.inner.grammar,
                 })
             }
-            GcflobddNodeType::Bdd(bdd_node) => {
+            RefGcflobddNodeType::Bdd(bdd_node) => {
                 let node = GcflobddNodeType::Bdd(bdd_node.reduce(&reduce_map, num_exits, context));
                 context.borrow_mut().add_gcflobdd_node(Self {
                     num_exits,
-                    grammar: this.grammar,
+                    grammar: this_view.inner.grammar,
                     node,
                 })
             }
         };
         context
             .borrow_mut()
-            .set_reduction_cache(this, &cache_reduce_map, ans.clone());
+            .set_reduction_cache(this, &cache_reduce_map, ans);
         ans
     }
 }
@@ -935,17 +819,25 @@ impl<'grammar> InternalNode<'grammar> {
         value: usize,
         layer_idx: usize,
         connection_idx: usize,
+        context: &RefCell<Context<'grammar>>,
     ) -> Option<Vec<Option<bool>>> {
         let connection_list = &self.connections[layer_idx];
         let connection = &connection_list[connection_idx];
+        let context_ref = context.borrow();
+        let entry_point_view =
+            unsafe { context_ref.get_gcflobdd_node_view(connection.entry_point) };
         if layer_idx == self.connections.len() - 1 {
-            return inverse_lookup(&connection.return_map, &value)
-                .map(|inner_value| connection.entry_point.find_one_path_to(inner_value));
+            return inverse_lookup(&connection.return_map, &value).map(|inner_value| {
+                GcflobddNode::find_one_path_to(entry_point_view.inner, inner_value, context)
+            });
         }
-        for inner_target in 0..connection.entry_point.get_num_exits() {
+        for inner_target in 0..entry_point_view.inner.num_exits {
             let next_connection_index = connection.return_map[inner_target];
-            if let Some(path) = self.find_one_path_to(value, layer_idx + 1, next_connection_index) {
-                let path_to_next_connection = connection.entry_point.find_one_path_to(inner_target);
+            if let Some(path) =
+                self.find_one_path_to(value, layer_idx + 1, next_connection_index, context)
+            {
+                let path_to_next_connection =
+                    GcflobddNode::find_one_path_to(entry_point_view.inner, inner_target, context);
                 return Some([path_to_next_connection, path].concat());
             }
         }

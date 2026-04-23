@@ -10,10 +10,11 @@ pub mod soa;
 mod tests;
 
 use std::cell::RefCell;
+use std::marker::PhantomData;
 use std::ops::Not;
 use std::rc::Rc;
 
-use crate::gcflobdd::connection::ConnectionPair;
+use crate::gcflobdd::connection::{Connection, ConnectionPair};
 use crate::gcflobdd::context::{BoolOperation, Context, IntOperation};
 use crate::gcflobdd::node::GcflobddNode;
 use crate::gcflobdd::return_map::{complement, inverse_lookup};
@@ -141,6 +142,7 @@ impl<'grammar> Gcflobdd<'grammar> {
             ConnectionT {
                 entry_point: node,
                 return_map: vec![false, true],
+                phantom: PhantomData,
             },
             grammar,
         )
@@ -151,6 +153,7 @@ impl<'grammar> Gcflobdd<'grammar> {
             ConnectionT {
                 entry_point: node,
                 return_map: vec![true],
+                phantom: PhantomData,
             },
             grammar,
         )
@@ -161,6 +164,7 @@ impl<'grammar> Gcflobdd<'grammar> {
             ConnectionT {
                 entry_point: node,
                 return_map: vec![false],
+                phantom: PhantomData,
             },
             grammar,
         )
@@ -182,8 +186,11 @@ impl<'grammar> Gcflobdd<'grammar> {
     define_bool_op!(mk_xnor, Xnor, a, b, !(a ^ b));
     define_bool_op!(mk_implies, Implies, a, b, !a || b);
 
-    pub fn find_one_satisfiable_assignment(&self) -> Option<Vec<Option<bool>>> {
-        self.find_one_path_to(&true)
+    pub fn find_one_satisfiable_assignment(
+        &self,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Option<Vec<Option<bool>>> {
+        self.find_one_path_to(&true, context)
     }
 }
 
@@ -198,40 +205,41 @@ impl Not for Gcflobdd<'_> {
 pub type GcflobddInt<'grammar> = GcflobddT<'grammar, i32>;
 
 impl<'grammar> GcflobddInt<'grammar> {
-    pub fn mk_hadamard_voc12(
-        level: usize,
-        grammar: &'grammar Grammar,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Self {
-        Self {
-            connection: ConnectionT {
-                entry_point: GcflobddNode::mk_balanced_hadamard_voc12(
-                    level,
-                    &grammar.root,
-                    context,
-                ),
-                return_map: vec![1, -1],
-            },
-            grammar,
-        }
-    }
-    pub fn mk_hadamard_voc13(
-        level: usize,
-        grammar: &'grammar Grammar,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Self {
-        Self {
-            connection: ConnectionT {
-                entry_point: GcflobddNode::mk_balanced_hadamard_voc13(
-                    level,
-                    &grammar.root,
-                    context,
-                ),
-                return_map: vec![1, -1],
-            },
-            grammar,
-        }
-    }
+    // pub fn mk_hadamard_voc12(
+    //     level: usize,
+    //     grammar: &'grammar Grammar,
+    //     context: &RefCell<Context<'grammar>>,
+    // ) -> Self {
+    //     Self {
+    //         connection: ConnectionT {
+    //             entry_point: GcflobddNode::mk_balanced_hadamard_voc12(
+    //                 level,
+    //                 &grammar.root,
+    //                 context,
+    //             ),
+    //             return_map: vec![1, -1],
+    //             phantom: PhantomData,
+    //         },
+    //         grammar,
+    //     }
+    // }
+    // pub fn mk_hadamard_voc13(
+    //     level: usize,
+    //     grammar: &'grammar Grammar,
+    //     context: &RefCell<Context<'grammar>>,
+    // ) -> Self {
+    //     Self {
+    //         connection: ConnectionT {
+    //             entry_point: GcflobddNode::mk_balanced_hadamard_voc13(
+    //                 level,
+    //                 &grammar.root,
+    //                 context,
+    //             ),
+    //             return_map: vec![1, -1],
+    //         },
+    //         grammar,
+    //     }
+    // }
 
     define_int_op!(mk_add, Add, a, b, a + b);
     define_int_op!(mk_sub, Sub, a, b, a - b);
@@ -239,9 +247,19 @@ impl<'grammar> GcflobddInt<'grammar> {
 }
 
 impl<'grammar, T: Eq> GcflobddT<'grammar, T> {
-    pub fn find_one_path_to(&self, value: &T) -> Option<Vec<Option<bool>>> {
+    pub fn find_one_path_to(
+        &self,
+        value: &T,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Option<Vec<Option<bool>>> {
+        let context_ref = context.borrow();
+        let this_view = unsafe { context_ref.get_gcflobdd_node_view(self.connection.entry_point) };
         let index = inverse_lookup(&self.connection.return_map, value)?;
-        Some(self.connection.entry_point.find_one_path_to(index))
+        Some(GcflobddNode::find_one_path_to(
+            this_view.inner,
+            index,
+            context,
+        ))
     }
 }
 impl<'grammar, T: Copy> GcflobddT<'grammar, T> {
@@ -253,9 +271,10 @@ impl<'grammar, T: Copy> GcflobddT<'grammar, T> {
         let ConnectionPair {
             entry_point,
             return_map,
+            ..
         } = GcflobddNode::pair_product(
-            &self.connection.entry_point,
-            &rhs.connection.entry_point,
+            self.connection.entry_point,
+            rhs.connection.entry_point,
             context,
         );
         let mapped_return_map = return_map
@@ -267,6 +286,7 @@ impl<'grammar, T: Copy> GcflobddT<'grammar, T> {
             connection: ConnectionT {
                 entry_point,
                 return_map: mapped_return_map,
+                phantom: PhantomData,
             },
             grammar: self.grammar,
         }
@@ -297,7 +317,7 @@ impl<'grammar, T> GcflobddT<'grammar, T> {
             .collect::<Vec<_>>();
         let num_exits = new_return_handle.len();
         let entry_point = GcflobddNode::reduce(
-            &self.connection.entry_point,
+            self.connection.entry_point,
             mapping_array.into(),
             num_exits,
             context,
@@ -307,6 +327,7 @@ impl<'grammar, T> GcflobddT<'grammar, T> {
             connection: ConnectionT {
                 entry_point,
                 return_map: new_return_handle,
+                phantom: PhantomData,
             },
             grammar: self.grammar,
         }
@@ -329,9 +350,12 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
         op: impl Fn(&T, &T) -> T,
         context: &RefCell<Context<'grammar>>,
     ) -> Self {
+        let context_ref = context.borrow();
+        let lhs_view = unsafe { context_ref.get_gcflobdd_node_view(self.connection.entry_point) };
+        let rhs_view = unsafe { context_ref.get_gcflobdd_node_view(rhs.connection.entry_point) };
         let mut new_return_handle = vec![];
-        let lhs_num_exits = self.connection.entry_point.get_num_exits();
-        let rhs_num_exits = rhs.connection.entry_point.get_num_exits();
+        let lhs_num_exits = lhs_view.inner.num_exits;
+        let rhs_num_exits = rhs_view.inner.num_exits;
 
         let mut reduce_map = vec![0; lhs_num_exits * rhs_num_exits];
 
@@ -358,9 +382,10 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
         let ConnectionT {
             entry_point,
             return_map,
+            ..
         } = GcflobddNode::pair_map(
-            &self.connection.entry_point,
-            &rhs.connection.entry_point,
+            self.connection.entry_point,
+            rhs.connection.entry_point,
             &reduce_matrix,
             num_exits,
             context,
@@ -371,6 +396,7 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
             connection: ConnectionT {
                 entry_point,
                 return_map: mapped_return_map,
+                phantom: PhantomData,
             },
             grammar: self.grammar,
         }
@@ -379,7 +405,7 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
 
 impl<T: PartialEq> PartialEq for GcflobddT<'_, T> {
     fn eq(&self, other: &Self) -> bool {
-        Rc::as_ptr(&self.connection.entry_point) == Rc::as_ptr(&other.connection.entry_point)
+        self.connection.entry_point == other.connection.entry_point
             && self.connection.return_map == other.connection.return_map
     }
 }

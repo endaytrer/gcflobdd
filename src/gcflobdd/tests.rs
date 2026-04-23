@@ -22,19 +22,19 @@ fn test_mk_projection_true_false() {
     for grammar in grammar_choice!() {
         let context = RefCell::new(Context::default());
         let c1 = Gcflobdd::mk_projection(0, &grammar, &context);
-        let assignment = c1.find_one_satisfiable_assignment().unwrap();
+        let assignment = c1.find_one_satisfiable_assignment(&context).unwrap();
         assert_eq!(assignment, vec![Some(true), None, None, None]);
 
         let c2 = Gcflobdd::mk_projection(1, &grammar, &context);
-        let assignment = c2.find_one_satisfiable_assignment().unwrap();
+        let assignment = c2.find_one_satisfiable_assignment(&context).unwrap();
         assert_eq!(assignment, vec![None, Some(true), None, None]);
 
         let c3 = Gcflobdd::mk_true(&grammar, &context);
-        let assignment = c3.find_one_satisfiable_assignment().unwrap();
+        let assignment = c3.find_one_satisfiable_assignment(&context).unwrap();
         assert_eq!(assignment, vec![None, None, None, None]);
 
         let c4 = Gcflobdd::mk_false(&grammar, &context);
-        let assignment = c4.find_one_satisfiable_assignment();
+        let assignment = c4.find_one_satisfiable_assignment(&context);
         assert!(assignment.is_none());
     }
 }
@@ -66,7 +66,7 @@ fn test_pair_product() {
         drop(c1);
         drop(c2);
         context.borrow_mut().gc();
-        let path = c3.find_one_path_to(&(true, true)).unwrap();
+        let path = c3.find_one_path_to(&(true, true), &context).unwrap();
         assert_eq!(path, vec![Some(true), Some(true), None, None]);
     }
 }
@@ -105,7 +105,7 @@ fn test_op() {
         drop(c1);
         drop(c2);
         context.borrow_mut().gc();
-        let path = c3.find_one_satisfiable_assignment().unwrap();
+        let path = c3.find_one_satisfiable_assignment(&context).unwrap();
         assert_eq!(path, vec![Some(true), Some(true), None, None]);
     }
 }
@@ -120,7 +120,7 @@ fn test_xor() {
         drop(c1);
         drop(c2);
         context.borrow_mut().gc();
-        let path = c3.find_one_satisfiable_assignment().unwrap();
+        let path = c3.find_one_satisfiable_assignment(&context).unwrap();
         assert_eq!(path, vec![Some(false), Some(true), None, None]);
     }
 }
