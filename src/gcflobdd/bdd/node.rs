@@ -32,7 +32,7 @@ impl BddNode {
         let one_branch = Self::mk_terminal(1, context);
 
         context
-            .borrow_mut()
+            .borrow()
             .add_bdd_node(Self::Internal(BddInternalNode {
                 var_id: i,
                 zero_branch,
@@ -44,7 +44,7 @@ impl BddNode {
         let zero_branch = Self::mk_terminal(1, context);
         let one_branch = Self::mk_terminal(0, context);
         context
-            .borrow_mut()
+            .borrow()
             .add_bdd_node(Self::Internal(BddInternalNode {
                 var_id: i,
                 zero_branch,
@@ -56,14 +56,14 @@ impl BddNode {
         let zero_branch = Self::mk_terminal(0, context);
         let one_branch = Self::mk_terminal(1, context);
         let node_1 = context
-            .borrow_mut()
+            .borrow()
             .add_bdd_node(Self::Internal(BddInternalNode {
                 var_id: 1,
                 zero_branch: zero_branch.clone(),
                 one_branch,
             }));
         context
-            .borrow_mut()
+            .borrow()
             .add_bdd_node(Self::Internal(BddInternalNode {
                 var_id: 0,
                 zero_branch,
@@ -72,7 +72,7 @@ impl BddNode {
     }
 
     fn mk_terminal(i: usize, context: &RefCell<Context<'_>>) -> Rch<Self> {
-        context.borrow_mut().add_bdd_node(Self::Terminal(i))
+        context.borrow().add_bdd_node(Self::Terminal(i))
     }
 
     pub fn find_one_path_to(
@@ -132,7 +132,7 @@ impl BddNode {
         };
 
         context
-            .borrow_mut()
+            .borrow()
             .set_bdd_pair_product_cache(lhs, rhs, ans.clone());
         ans
     }
@@ -160,7 +160,7 @@ impl BddNode {
                 return_map.push(pair);
                 new_idx
             });
-            let ans = context.borrow_mut().add_bdd_node(Self::Terminal(idx));
+            let ans = context.borrow().add_bdd_node(Self::Terminal(idx));
             pair_cache.insert((hash1, hash2), ans.clone());
             return ans;
         }
@@ -200,7 +200,7 @@ impl BddNode {
             zero_branch
         } else {
             context
-                .borrow_mut()
+                .borrow()
                 .add_bdd_node(Self::Internal(BddInternalNode {
                     var_id,
                     zero_branch,
@@ -226,7 +226,7 @@ impl BddNode {
         }
         let ans = match this.as_ref().as_ref() {
             Self::Terminal(i) => context
-                .borrow_mut()
+                .borrow()
                 .add_bdd_node(BddNode::Terminal(reduce_map[*i])),
             Self::Internal(BddInternalNode {
                 var_id,
@@ -239,7 +239,7 @@ impl BddNode {
                     zero_branch
                 } else {
                     context
-                        .borrow_mut()
+                        .borrow()
                         .add_bdd_node(BddNode::Internal(BddInternalNode {
                             var_id: *var_id,
                             zero_branch,
@@ -249,7 +249,7 @@ impl BddNode {
             }
         };
         context
-            .borrow_mut()
+            .borrow()
             .set_bdd_reduction_cache(this, reduce_map, ans.clone());
         ans
     }
@@ -284,10 +284,10 @@ impl BddNode {
 
         let ans = BddConnection {
             entry_point,
-            return_map: context.borrow_mut().add_return_map(return_map),
+            return_map: context.borrow().add_return_map(return_map),
         };
         context
-            .borrow_mut()
+            .borrow()
             .set_bdd_pair_map_cache(lhs, rhs, reduce_matrix, ans.clone());
         ans
     }
@@ -317,7 +317,7 @@ impl BddNode {
                 return_map.push(return_idx);
                 return_map.len() - 1
             });
-            let ans = context.borrow_mut().add_bdd_node(Self::Terminal(idx));
+            let ans = context.borrow().add_bdd_node(Self::Terminal(idx));
             pair_cache.insert((hash1, hash2), ans.clone());
             return ans;
         }
@@ -373,7 +373,7 @@ impl BddNode {
             zero_branch
         } else {
             context
-                .borrow_mut()
+                .borrow()
                 .add_bdd_node(Self::Internal(BddInternalNode {
                     var_id,
                     zero_branch,

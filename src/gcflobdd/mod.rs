@@ -50,7 +50,7 @@ macro_rules! _define_op {
                 context,
             );
             context
-                .borrow_mut()
+                .borrow()
                 .$set_op_cache::<{ $op_type::$op_code as usize }>(
                     self.clone(),
                     rhs.clone(),
@@ -253,7 +253,7 @@ impl<'grammar, T: Eq> GcflobddT<'grammar, T> {
         context: &RefCell<Context<'grammar>>,
     ) -> Option<Vec<Option<bool>>> {
         let context_ref = context.borrow();
-        let this_view = unsafe { context_ref.get_gcflobdd_node_view(self.connection.entry_point) };
+        let this_view = context_ref.get_gcflobdd_node_view(self.connection.entry_point);
         let index = inverse_lookup(&self.connection.return_map, value)?;
         Some(GcflobddNode::find_one_path_to(
             this_view.inner,
@@ -351,8 +351,8 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
         context: &RefCell<Context<'grammar>>,
     ) -> Self {
         let context_ref = context.borrow();
-        let lhs_view = unsafe { context_ref.get_gcflobdd_node_view(self.connection.entry_point) };
-        let rhs_view = unsafe { context_ref.get_gcflobdd_node_view(rhs.connection.entry_point) };
+        let lhs_view = context_ref.get_gcflobdd_node_view(self.connection.entry_point);
+        let rhs_view = context_ref.get_gcflobdd_node_view(rhs.connection.entry_point);
         let mut new_return_handle = vec![];
         let lhs_num_exits = lhs_view.inner.num_exits;
         let rhs_num_exits = rhs_view.inner.num_exits;
@@ -378,7 +378,7 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
         }
 
         let num_exits = new_return_handle.len();
-        let reduce_matrix = context.borrow_mut().add_reduce_matrix(reduce_map);
+        let reduce_matrix = context.borrow().add_reduce_matrix(reduce_map);
         let ConnectionT {
             entry_point,
             return_map,

@@ -46,7 +46,7 @@ impl<'grammar> Connection<'grammar> {
     ) -> Self {
         Self {
             return_map: context
-                .borrow_mut()
+                .borrow()
                 .add_return_map((0..num_exits).collect()),
             entry_point,
             phantom: PhantomData,
@@ -58,7 +58,7 @@ impl<'grammar> Connection<'grammar> {
         context: &RefCell<Context<'grammar>>,
     ) -> Self {
         Self {
-            return_map: context.borrow_mut().add_return_map(return_map),
+            return_map: context.borrow().add_return_map(return_map),
             entry_point,
             phantom: PhantomData,
         }

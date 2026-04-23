@@ -33,11 +33,11 @@ impl Bdd {
     }
     #[cfg(test)]
     pub(super) fn mk_false(context: &RefCell<Context<'_>>) -> Self {
-        Self(context.borrow_mut().add_bdd_node(BddNode::Terminal(0)))
+        Self(context.borrow().add_bdd_node(BddNode::Terminal(0)))
     }
     #[cfg(test)]
     pub(super) fn mk_true(context: &RefCell<Context<'_>>) -> Self {
-        Self(context.borrow_mut().add_bdd_node(BddNode::Terminal(1)))
+        Self(context.borrow().add_bdd_node(BddNode::Terminal(1)))
     }
     pub fn find_one_path_to(&self, value: usize, bdd_size: usize) -> Option<Vec<Option<bool>>> {
         self.0.find_one_path_to(value, 0, bdd_size)
