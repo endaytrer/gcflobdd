@@ -18,7 +18,7 @@ pub(super) mod node;
 mod tests;
 
 #[derive(Debug)]
-pub(super) struct Bdd(pub Rch<BddNode>);
+pub(crate) struct Bdd(pub Rch<BddNode>);
 
 impl Bdd {
     pub fn mk_projection(i: usize, context: &RefCell<Context<'_>>) -> Self {

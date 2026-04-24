@@ -4,7 +4,7 @@ use crate::{
         connection::{Connection, ConnectionPair, ConnectionT},
         context::Context,
         return_map::inverse_lookup,
-        soa::{RefGcflobddNode, RefGcflobddNodeType, SoaGcflobddNodeType},
+        soa::{RefGcflobddNode, RefGcflobddNodeType},
     },
     grammar::{GrammarNode, GrammarNodeType},
     utils::hash_cache::Rch,
@@ -47,7 +47,7 @@ impl Hash for GcflobddNode<'_> {
 /// 0. Non-empty
 /// 1. R[0] = 0,
 /// 2. For all i > 0, R[i] \in {R[0], R[1], ..., R[i - 1], max{R[0], R[1], ..., R[i - 1]}}
-pub(super) struct ReduceMap(Vec<usize>);
+pub(crate) struct ReduceMap(Vec<usize>);
 
 impl From<Vec<usize>> for ReduceMap {
     #[inline]
@@ -93,7 +93,7 @@ pub(super) enum GcflobddNodeType<'grammar> {
 }
 
 #[derive(PartialEq, Eq)]
-pub(super) struct InternalNode<'grammar> {
+pub(crate) struct InternalNode<'grammar> {
     pub(super) connections: Vec<Vec<Connection<'grammar>>>,
 }
 
@@ -115,7 +115,7 @@ impl<'grammar> GcflobddNode<'grammar> {
     pub fn get_num_exits(&self) -> usize {
         self.num_exits
     }
-    pub fn mk_distinction(
+    pub(crate) fn mk_distinction(
         i: usize,
         grammar: &'grammar Rc<GrammarNode>,
         context: &RefCell<Context<'grammar>>,
@@ -169,7 +169,7 @@ impl<'grammar> GcflobddNode<'grammar> {
         };
         context.borrow().add_gcflobdd_node(ans)
     }
-    pub fn mk_no_distinction(
+    pub(crate) fn mk_no_distinction(
         grammar: &'grammar Rc<GrammarNode>,
         context: &RefCell<Context<'grammar>>,
     ) -> usize {
@@ -207,7 +207,7 @@ impl<'grammar> GcflobddNode<'grammar> {
         }
     }
 
-    pub fn pair_product(
+    pub(super) fn pair_product(
         lhs: usize,
         rhs: usize,
         context: &RefCell<Context<'grammar>>,
@@ -340,7 +340,7 @@ impl<'grammar> GcflobddNode<'grammar> {
         ans
     }
 
-    pub fn pair_map(
+    pub(crate) fn pair_map(
         lhs: usize,
         rhs: usize,
         reduce_matrix: &Rch<Vec<usize>>, // should be a ReduceMap if either lhs / rhs is a dont care
@@ -679,7 +679,7 @@ impl<'grammar> GcflobddNode<'grammar> {
             .set_pair_map_cache(lhs, rhs, reduce_matrix, ans.clone());
         ans
     }
-    pub fn reduce(
+    pub(crate) fn reduce(
         this: usize,
         reduce_map: ReduceMap,
         num_exits: usize,

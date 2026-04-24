@@ -6,7 +6,7 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub(super) struct ConnectionT<'grammar, Handle> {
+pub(crate) struct ConnectionT<'grammar, Handle> {
     pub entry_point: usize,
     pub return_map: Handle,
     pub phantom: PhantomData<GcflobddNode<'grammar>>,

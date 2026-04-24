@@ -12,9 +12,8 @@ mod tests;
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::ops::Not;
-use std::rc::Rc;
 
-use crate::gcflobdd::connection::{Connection, ConnectionPair};
+use crate::gcflobdd::connection::ConnectionPair;
 use crate::gcflobdd::context::{BoolOperation, Context, IntOperation};
 use crate::gcflobdd::node::GcflobddNode;
 use crate::gcflobdd::return_map::{complement, inverse_lookup};

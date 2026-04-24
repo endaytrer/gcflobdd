@@ -240,7 +240,7 @@ const_assert!(std::mem::size_of::<FatPointer>() == std::mem::size_of::<Vec<Vec<C
 const_assert!(std::mem::size_of::<FatPointer>() == std::mem::size_of::<Bdd>() + 16);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RefGcflobddNodeType<'a, 'grammar> {
+pub(crate) enum RefGcflobddNodeType<'a, 'grammar> {
     DontCare,
     Fork,
     Internal(&'a InternalNode<'grammar>),
