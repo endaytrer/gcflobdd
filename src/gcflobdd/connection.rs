@@ -126,8 +126,13 @@ impl<'grammar> Connection<'grammar> {
         rhs_num_exits: usize,
         exit_lookup: &mut [usize],
         outer_return_map: &mut Vec<(usize, usize)>,
+        local_cache: &mut HashMap<(usize, usize), Rch<Self>>,
         context: &RefCell<Context<'grammar>>,
     ) -> Rch<Self> {
+        let k = (Rc::as_ptr(lhs) as usize, Rc::as_ptr(rhs) as usize);
+        if let Some(cached) = local_cache.get(&k) {
+            return cached.clone();
+        }
         let (inner_product, inner_pairs) =
             GcflobddNode::pair_product(&lhs.entry_point, &rhs.entry_point, context);
         let ans = match (&lhs.return_map, &rhs.return_map) {
@@ -143,6 +148,7 @@ impl<'grammar> Connection<'grammar> {
                                 rhs_num_exits,
                                 exit_lookup,
                                 outer_return_map,
+                                local_cache,
                                 context,
                             )
                         })
@@ -170,14 +176,21 @@ impl<'grammar> Connection<'grammar> {
             }
             _ => unreachable!(),
         };
-        context.borrow_mut().add_connection(ans)
+        let ans = context.borrow_mut().add_connection(ans);
+        local_cache.insert(k, ans.clone());
+        ans
     }
     pub fn reduce(
         this: &Rch<Self>,
         reduce_map: &[usize],
         num_exits: usize,
+        local_cache: &mut HashMap<usize, Rch<Self>>,
         context: &RefCell<Context<'grammar>>,
     ) -> Rch<Self> {
+        let k = Rc::as_ptr(this) as usize;
+        if let Some(cached) = local_cache.get(&k) {
+            return cached.clone();
+        }
         let ans = match &this.return_map {
             ReturnMap::NonTerminal(next_connections) => {
                 #[cfg(feature = "fx-hash")]
@@ -189,7 +202,7 @@ impl<'grammar> Connection<'grammar> {
                 let inner_reduce_map = next_connections
                     .iter()
                     .map(|node| {
-                        let reduced = Self::reduce(node, reduce_map, num_exits, context);
+                        let reduced = Self::reduce(node, reduce_map, num_exits, local_cache, context);
                         *value_hash_map.entry(reduced.clone()).or_insert_with(|| {
                             inner_return_map.push(reduced.clone());
                             inner_return_map.len() - 1
@@ -234,7 +247,9 @@ impl<'grammar> Connection<'grammar> {
                 }
             }
         };
-        context.borrow_mut().add_connection(ans)
+        let ans = context.borrow_mut().add_connection(ans);
+        local_cache.insert(k, ans.clone());
+        ans
     }
     /// size of op_matrix: lhs_num_exits * rhs_num_exits
     /// num_exits: should be the largest value in op_matrix + 1
@@ -247,8 +262,13 @@ impl<'grammar> Connection<'grammar> {
         rhs_num_exits: usize,
         exit_lookup: &mut [usize],
         outer_return_map: &mut Vec<usize>,
+        local_cache: &mut HashMap<(usize, usize), Rch<Self>>,
         context: &RefCell<Context<'grammar>>,
     ) -> Rch<Self> {
+        let k = (Rc::as_ptr(lhs) as usize, Rc::as_ptr(rhs) as usize);
+        if let Some(cached) = local_cache.get(&k) {
+            return cached.clone();
+        }
         let ans = match (&lhs.return_map, &rhs.return_map) {
             (ReturnMap::NonTerminal(lhs_next), ReturnMap::NonTerminal(rhs_next)) => {
                 let (inner_product, inner_pairs) =
@@ -270,6 +290,7 @@ impl<'grammar> Connection<'grammar> {
                             rhs_num_exits,
                             exit_lookup,
                             outer_return_map,
+                            local_cache,
                             context,
                         );
                         *value_hash_map.entry(conn.clone()).or_insert_with(|| {
@@ -331,7 +352,9 @@ impl<'grammar> Connection<'grammar> {
             }
             _ => unreachable!(),
         };
-        context.borrow_mut().add_connection(ans)
+        let ans = context.borrow_mut().add_connection(ans);
+        local_cache.insert(k, ans.clone());
+        ans
     }
 }
 

@@ -8,6 +8,8 @@ use std::{
     hash::{Hash, Hasher},
     rc::Rc,
 };
+#[cfg(feature = "fx-hash")]
+use rustc_hash::FxHashMap as HashMap;
 #[cfg(not(feature = "fx-hash"))]
 use std::{collections::HashMap, hash::DefaultHasher};
 
@@ -309,12 +311,17 @@ impl<'grammar> GcflobddNode<'grammar> {
             (GcflobddNodeType::Internal(lhs_node), GcflobddNodeType::Internal(rhs_node)) => {
                 let mut exit_lookup = vec![usize::MAX; lhs.num_exits * rhs.num_exits];
                 let mut outer_return_map = Vec::with_capacity(lhs.num_exits * rhs.num_exits);
+                #[cfg(feature = "fx-hash")]
+                let mut local_cache = HashMap::default();
+                #[cfg(not(feature = "fx-hash"))]
+                let mut local_cache = HashMap::new();
                 let connection = Connection::pair_product(
                     &lhs_node.0,
                     &rhs_node.0,
                     rhs.num_exits,
                     &mut exit_lookup,
                     &mut outer_return_map,
+                    &mut local_cache,
                     context,
                 );
 
@@ -408,6 +415,10 @@ impl<'grammar> GcflobddNode<'grammar> {
             (GcflobddNodeType::Internal(lhs_node), GcflobddNodeType::Internal(rhs_node)) => {
                 let mut outer_return_map = Vec::with_capacity(lhs.num_exits * rhs.num_exits);
                 let mut exit_lookup = vec![usize::MAX; lhs.num_exits * rhs.num_exits];
+                #[cfg(feature = "fx-hash")]
+                let mut local_cache = HashMap::default();
+                #[cfg(not(feature = "fx-hash"))]
+                let mut local_cache = HashMap::new();
                 let connection = Connection::pair_map(
                     &lhs_node.0,
                     &rhs_node.0,
@@ -416,6 +427,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                     rhs.num_exits,
                     &mut exit_lookup,
                     &mut outer_return_map,
+                    &mut local_cache,
                     context,
                 );
                 if outer_return_map.len() == 1 {
@@ -486,10 +498,15 @@ impl<'grammar> GcflobddNode<'grammar> {
             // can only be two exits, the possibility of only having one exit is handled at the beginning of the function
             GcflobddNodeType::Fork => context.borrow_mut().get_gcflobdd_node(this).unwrap(),
             GcflobddNodeType::Internal(internal_node) => {
+                #[cfg(feature = "fx-hash")]
+                let mut local_cache = HashMap::default();
+                #[cfg(not(feature = "fx-hash"))]
+                let mut local_cache = HashMap::new();
                 let node = GcflobddNodeType::Internal(InternalNode(Connection::reduce(
                     &internal_node.0,
                     reduce_map,
                     num_exits,
+                    &mut local_cache,
                     context,
                 )));
                 context.borrow_mut().add_gcflobdd_node(Self {
