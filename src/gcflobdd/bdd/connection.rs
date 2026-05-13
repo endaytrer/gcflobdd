@@ -1,9 +1,6 @@
 use std::rc::Rc;
 
-use crate::{
-    gcflobdd::{ReturnMapT, bdd::node::BddNode, return_map::ReturnMap},
-    utils::hash_cache::Rch,
-};
+use crate::{gcflobdd::bdd::node::BddNode, utils::hash_cache::Rch};
 
 #[derive(Debug, Clone)]
 pub(crate) struct BddConnectionT<Handle> {
@@ -26,8 +23,8 @@ impl<Handle: PartialEq> PartialEq for BddConnectionT<Handle> {
 }
 impl<Handle: Eq> Eq for BddConnectionT<Handle> {}
 
-pub(crate) type BddConnection = BddConnectionT<Rch<ReturnMap>>;
-pub(crate) type BddConnectionPair = BddConnectionT<ReturnMapT<(usize, usize)>>;
+pub(crate) type BddConnection = BddConnectionT<Vec<usize>>;
+pub(crate) type BddConnectionPair = BddConnectionT<Vec<(usize, usize)>>;
 
 impl BddConnectionPair {
     pub fn flipped(&self) -> Self {

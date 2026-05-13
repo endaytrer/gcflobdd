@@ -12,22 +12,24 @@ use std::cell::RefCell;
 use std::ops::Not;
 use std::rc::Rc;
 
-use crate::gcflobdd::connection::ConnectionPair;
 use crate::gcflobdd::context::{BoolOperation, Context, IntOperation};
 use crate::gcflobdd::node::GcflobddNode;
 use crate::gcflobdd::return_map::{complement, inverse_lookup};
 use crate::grammar::Grammar;
-use connection::ConnectionT;
-use return_map::ReturnMapT;
+use crate::utils::hash_cache::Rch;
 
 #[derive(Clone)]
 pub struct GcflobddT<'grammar, T> {
-    connection: ConnectionT<'grammar, ReturnMapT<T>>,
+    entry_point: Rch<GcflobddNode<'grammar>>,
+    return_map: Vec<T>,
     grammar: &'grammar Grammar,
 }
 impl<'grammar, T: std::fmt::Debug> std::fmt::Debug for GcflobddT<'grammar, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("GcflobddT").field(&self.connection).finish()
+        f.debug_struct("GcflobddT")
+            .field("entry_point", &self.entry_point)
+            .field("return_map", &self.return_map)
+            .finish()
     }
 }
 
@@ -121,11 +123,13 @@ macro_rules! define_int_op {
 
 impl<'grammar> Gcflobdd<'grammar> {
     fn new(
-        connection: ConnectionT<'grammar, ReturnMapT<bool>>,
+        entry_point: Rch<GcflobddNode<'grammar>>,
+        return_map: Vec<bool>,
         grammar: &'grammar Grammar,
     ) -> Self {
         Self {
-            connection,
+            entry_point,
+            return_map,
             grammar,
         }
     }
@@ -136,39 +140,20 @@ impl<'grammar> Gcflobdd<'grammar> {
         context: &RefCell<Context<'grammar>>,
     ) -> Self {
         let node = GcflobddNode::mk_distinction(i, &grammar.root, context);
-        Self::new(
-            ConnectionT {
-                entry_point: node,
-                return_map: vec![false, true],
-            },
-            grammar,
-        )
+        Self::new(node, vec![false, true], grammar)
     }
     pub fn mk_true(grammar: &'grammar Grammar, context: &RefCell<Context<'grammar>>) -> Self {
         let node = GcflobddNode::mk_no_distinction(&grammar.root, context);
-        Self::new(
-            ConnectionT {
-                entry_point: node,
-                return_map: vec![true],
-            },
-            grammar,
-        )
+        Self::new(node, vec![true], grammar)
     }
     pub fn mk_false(grammar: &'grammar Grammar, context: &RefCell<Context<'grammar>>) -> Self {
         let node = GcflobddNode::mk_no_distinction(&grammar.root, context);
-        Self::new(
-            ConnectionT {
-                entry_point: node,
-                return_map: vec![false],
-            },
-            grammar,
-        )
+        Self::new(node, vec![false], grammar)
     }
     pub fn mk_not(&self) -> Self {
-        let mut connection = self.connection.clone();
-        connection.return_map = complement(&connection.return_map);
         Self {
-            connection,
+            entry_point: self.entry_point.clone(),
+            return_map: complement(&self.return_map),
             grammar: self.grammar,
         }
     }
@@ -197,40 +182,40 @@ impl Not for Gcflobdd<'_> {
 pub type GcflobddInt<'grammar> = GcflobddT<'grammar, i32>;
 
 impl<'grammar> GcflobddInt<'grammar> {
-    pub fn mk_hadamard_voc12(
-        level: usize,
-        grammar: &'grammar Grammar,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Self {
-        Self {
-            connection: ConnectionT {
-                entry_point: GcflobddNode::mk_balanced_hadamard_voc12(
-                    level,
-                    &grammar.root,
-                    context,
-                ),
-                return_map: vec![1, -1],
-            },
-            grammar,
-        }
-    }
-    pub fn mk_hadamard_voc13(
-        level: usize,
-        grammar: &'grammar Grammar,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Self {
-        Self {
-            connection: ConnectionT {
-                entry_point: GcflobddNode::mk_balanced_hadamard_voc13(
-                    level,
-                    &grammar.root,
-                    context,
-                ),
-                return_map: vec![1, -1],
-            },
-            grammar,
-        }
-    }
+    // pub fn mk_hadamard_voc12(
+    //     level: usize,
+    //     grammar: &'grammar Grammar,
+    //     context: &RefCell<Context<'grammar>>,
+    // ) -> Self {
+    //     Self {
+    //         connection: ConnectionT {
+    //             entry_point: GcflobddNode::mk_balanced_hadamard_voc12(
+    //                 level,
+    //                 &grammar.root,
+    //                 context,
+    //             ),
+    //             return_map: vec![1, -1],
+    //         },
+    //         grammar,
+    //     }
+    // }
+    // pub fn mk_hadamard_voc13(
+    //     level: usize,
+    //     grammar: &'grammar Grammar,
+    //     context: &RefCell<Context<'grammar>>,
+    // ) -> Self {
+    //     Self {
+    //         connection: ConnectionT {
+    //             entry_point: GcflobddNode::mk_balanced_hadamard_voc13(
+    //                 level,
+    //                 &grammar.root,
+    //                 context,
+    //             ),
+    //             return_map: vec![1, -1],
+    //         },
+    //         grammar,
+    //     }
+    // }
 
     define_int_op!(mk_add, Add, a, b, a + b);
     define_int_op!(mk_sub, Sub, a, b, a - b);
@@ -239,8 +224,8 @@ impl<'grammar> GcflobddInt<'grammar> {
 
 impl<'grammar, T: Eq> GcflobddT<'grammar, T> {
     pub fn find_one_path_to(&self, value: &T) -> Option<Vec<Option<bool>>> {
-        let index = inverse_lookup(&self.connection.return_map, value)?;
-        Some(self.connection.entry_point.find_one_path_to(index))
+        let index = inverse_lookup(&self.return_map, value)?;
+        Some(self.entry_point.find_one_path_to(index))
     }
 }
 impl<'grammar, T: Copy> GcflobddT<'grammar, T> {
@@ -249,24 +234,16 @@ impl<'grammar, T: Copy> GcflobddT<'grammar, T> {
         rhs: &Self,
         context: &RefCell<Context<'grammar>>,
     ) -> GcflobddT<'grammar, (T, T)> {
-        let ConnectionPair {
-            entry_point,
-            return_map,
-        } = GcflobddNode::pair_product(
-            &self.connection.entry_point,
-            &rhs.connection.entry_point,
-            context,
-        );
+        let (entry_point, return_map) =
+            GcflobddNode::pair_product(&self.entry_point, &rhs.entry_point, context);
         let mapped_return_map = return_map
             .into_iter()
-            .map(|(i, j)| (self.connection.return_map[i], rhs.connection.return_map[j]))
+            .map(|(i, j)| (self.return_map[i], rhs.return_map[j]))
             .collect();
 
         GcflobddT {
-            connection: ConnectionT {
-                entry_point,
-                return_map: mapped_return_map,
-            },
+            entry_point,
+            return_map: mapped_return_map,
             grammar: self.grammar,
         }
     }
@@ -280,7 +257,6 @@ impl<'grammar, T> GcflobddT<'grammar, T> {
     ) -> GcflobddT<'grammar, V> {
         let mut new_return_handle = vec![];
         let mapping_array = self
-            .connection
             .return_map
             .iter()
             .map(|t| {
@@ -295,18 +271,12 @@ impl<'grammar, T> GcflobddT<'grammar, T> {
             })
             .collect::<Vec<_>>();
         let num_exits = new_return_handle.len();
-        let entry_point = GcflobddNode::reduce(
-            &self.connection.entry_point,
-            mapping_array.into(),
-            num_exits,
-            context,
-        );
+        let entry_point =
+            GcflobddNode::reduce(&self.entry_point, &mapping_array, num_exits, context);
 
         GcflobddT {
-            connection: ConnectionT {
-                entry_point,
-                return_map: new_return_handle,
-            },
+            entry_point,
+            return_map: new_return_handle,
             grammar: self.grammar,
         }
     }
@@ -329,15 +299,15 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
         context: &RefCell<Context<'grammar>>,
     ) -> Self {
         let mut new_return_handle = vec![];
-        let lhs_num_exits = self.connection.entry_point.get_num_exits();
-        let rhs_num_exits = rhs.connection.entry_point.get_num_exits();
+        let lhs_num_exits = self.entry_point.get_num_exits();
+        let rhs_num_exits = rhs.entry_point.get_num_exits();
 
         let mut reduce_map = vec![0; lhs_num_exits * rhs_num_exits];
 
         for j in 0..lhs_num_exits {
             for k in 0..rhs_num_exits {
-                let a = &self.connection.return_map[j];
-                let b = &rhs.connection.return_map[k];
+                let a = &self.return_map[j];
+                let b = &rhs.return_map[k];
                 let v = op(a, b);
 
                 let idx = new_return_handle
@@ -353,13 +323,10 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
         }
 
         let num_exits = new_return_handle.len();
-        let reduce_matrix = context.borrow_mut().add_reduce_matrix(reduce_map);
-        let ConnectionT {
-            entry_point,
-            return_map,
-        } = GcflobddNode::pair_map(
-            &self.connection.entry_point,
-            &rhs.connection.entry_point,
+        let reduce_matrix = context.borrow_mut().add_op_matrix(reduce_map);
+        let (entry_point, return_map) = GcflobddNode::pair_map(
+            &self.entry_point,
+            &rhs.entry_point,
             &reduce_matrix,
             num_exits,
             context,
@@ -367,10 +334,8 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
         let mapped_return_map = return_map.iter().map(|i| new_return_handle[*i]).collect();
 
         GcflobddT {
-            connection: ConnectionT {
-                entry_point,
-                return_map: mapped_return_map,
-            },
+            entry_point,
+            return_map: mapped_return_map,
             grammar: self.grammar,
         }
     }
@@ -378,14 +343,15 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
 
 impl<T: PartialEq> PartialEq for GcflobddT<'_, T> {
     fn eq(&self, other: &Self) -> bool {
-        Rc::as_ptr(&self.connection.entry_point) == Rc::as_ptr(&other.connection.entry_point)
-            && self.connection.return_map == other.connection.return_map
+        Rc::as_ptr(&self.entry_point) == Rc::as_ptr(&other.entry_point)
+            && self.return_map == other.return_map
     }
 }
 impl<T: Eq> Eq for GcflobddT<'_, T> {}
 
 impl<T: std::hash::Hash> std::hash::Hash for GcflobddT<'_, T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.connection.hash(state);
+        self.entry_point.hash(state);
+        self.return_map.hash(state);
     }
 }

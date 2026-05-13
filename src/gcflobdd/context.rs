@@ -4,7 +4,8 @@ use crate::gcflobdd::bdd::connection::{BddConnection, BddConnectionPair};
 use crate::gcflobdd::bdd::node::BddNode;
 use crate::gcflobdd::connection::{Connection, ConnectionPair};
 use crate::gcflobdd::node::GcflobddNode;
-use crate::gcflobdd::return_map::ReturnMap;
+use crate::gcflobdd::node::PairMapResult;
+use crate::gcflobdd::node::PairProductResult;
 use crate::utils::hash_cache::{HashCached, Rch};
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
@@ -51,16 +52,15 @@ pub enum IntOperation {
 pub struct Context<'grammar> {
     // Node tables
     gcflobdd_node_table: HashSet<Rch<GcflobddNode<'grammar>>>,
+    connection_table: HashSet<Rch<Connection<'grammar>>>,
     bdd_node_table: HashSet<Rch<BddNode>>,
-
-    return_map_table: HashSet<Rch<ReturnMap>>,
     reduce_matrix_table: HashSet<Rch<Vec<usize>>>,
 
     // caches
-    pair_product_cache: HashMap<(usize, usize), ConnectionPair<'grammar>>,
+    pair_product_cache: HashMap<(usize, usize), PairProductResult<'grammar>>,
     bdd_pair_product_cache: HashMap<(usize, usize), BddConnectionPair>,
     /// (lhs, rhs, op_matrix) -> Connection
-    pair_map_cache: HashMap<(usize, usize, usize), Connection<'grammar>>,
+    pair_map_cache: HashMap<(usize, usize, usize), PairMapResult<'grammar>>,
     bdd_pair_map_cache: HashMap<(usize, usize, usize), BddConnection>,
     reduction_cache: HashMap<ReductionCacheKey, Rch<GcflobddNode<'grammar>>>,
     bdd_reduction_cache: HashMap<ReductionCacheKey, Rch<BddNode>>,
@@ -78,10 +78,7 @@ impl<'grammar> Context<'grammar> {
         &mut self,
         node: GcflobddNode<'grammar>,
     ) -> Rch<GcflobddNode<'grammar>> {
-        let mut hasher = DefaultHasher::default();
-        node.hash(&mut hasher);
-        let hash = hasher.finish();
-        let hc_node = HashCached::with_hash(node, hash);
+        let hc_node = HashCached::new(node);
         if let Some(rch) = self.gcflobdd_node_table.get(&hc_node) {
             return rch.clone();
         }
@@ -89,11 +86,20 @@ impl<'grammar> Context<'grammar> {
         self.gcflobdd_node_table.insert(rch.clone());
         rch
     }
+    pub(super) fn add_connection(
+        &mut self,
+        conn: Connection<'grammar>,
+    ) -> Rch<Connection<'grammar>> {
+        let hc_conn = HashCached::new(conn);
+        if let Some(rch) = self.connection_table.get(&hc_conn) {
+            return rch.clone();
+        }
+        let rch = Rc::new(hc_conn);
+        self.connection_table.insert(rch.clone());
+        rch
+    }
     pub(super) fn add_bdd_node(&mut self, node: BddNode) -> Rch<BddNode> {
-        let mut hasher = DefaultHasher::default();
-        node.hash(&mut hasher);
-        let hash = hasher.finish();
-        let hc_node = HashCached::with_hash(node, hash);
+        let hc_node = HashCached::new(node);
         if let Some(rch) = self.bdd_node_table.get(&hc_node) {
             return rch.clone();
         }
@@ -101,19 +107,7 @@ impl<'grammar> Context<'grammar> {
         self.bdd_node_table.insert(rch.clone());
         rch
     }
-    pub(super) fn add_return_map(&mut self, return_map: ReturnMap) -> Rch<ReturnMap> {
-        let mut hasher = DefaultHasher::default();
-        return_map.hash(&mut hasher);
-        let hash = hasher.finish();
-        let hc_node = HashCached::with_hash(return_map, hash);
-        if let Some(rch) = self.return_map_table.get(&hc_node) {
-            return rch.clone();
-        }
-        let rch = Rc::new(hc_node);
-        self.return_map_table.insert(rch.clone());
-        rch
-    }
-    pub(super) fn add_reduce_matrix(&mut self, op_matrix: Vec<usize>) -> Rch<Vec<usize>> {
+    pub(super) fn add_op_matrix(&mut self, op_matrix: Vec<usize>) -> Rch<Vec<usize>> {
         let mut hasher = DefaultHasher::default();
         op_matrix.hash(&mut hasher);
         let hash = hasher.finish();
@@ -129,14 +123,15 @@ impl<'grammar> Context<'grammar> {
         &self,
         n1: &Rch<GcflobddNode>,
         n2: &Rch<GcflobddNode>,
-    ) -> Option<ConnectionPair<'grammar>> {
+    ) -> Option<PairProductResult<'grammar>> {
         let hash1 = Rc::as_ptr(n1) as usize;
         let hash2 = Rc::as_ptr(n2) as usize;
         if let Some(t) = self.pair_product_cache.get(&(hash1, hash2)).cloned() {
             return Some(t);
         }
+        //TODO: add flipped
         if let Some(t) = self.pair_product_cache.get(&(hash2, hash1)) {
-            return Some(t.flipped());
+            return Some((t.0.clone(), t.1.iter().map(|(a, b)| (*b, *a)).collect()));
         }
         None
     }
@@ -160,7 +155,7 @@ impl<'grammar> Context<'grammar> {
         n1: &Rch<GcflobddNode>,
         n2: &Rch<GcflobddNode>,
         op_matrix: &Rch<Vec<usize>>,
-    ) -> Option<Connection<'grammar>> {
+    ) -> Option<PairMapResult<'grammar>> {
         let hash1 = Rc::as_ptr(n1) as usize;
         let hash2 = Rc::as_ptr(n2) as usize;
         let hash3 = Rc::as_ptr(op_matrix) as usize;
@@ -197,7 +192,7 @@ impl<'grammar> Context<'grammar> {
         &mut self,
         n1: &Rch<GcflobddNode>,
         n2: &Rch<GcflobddNode>,
-        conn: ConnectionPair<'grammar>,
+        conn: PairProductResult<'grammar>,
     ) {
         let hash1 = Rc::as_ptr(n1) as usize;
         let hash2 = Rc::as_ptr(n2) as usize;
@@ -218,7 +213,7 @@ impl<'grammar> Context<'grammar> {
         n1: &Rch<GcflobddNode>,
         n2: &Rch<GcflobddNode>,
         op_matrix: &Rch<Vec<usize>>,
-        conn: Connection<'grammar>,
+        conn: PairMapResult<'grammar>,
     ) {
         let hash1 = Rc::as_ptr(n1) as usize;
         let hash2 = Rc::as_ptr(n2) as usize;
@@ -304,8 +299,6 @@ impl<'grammar> Context<'grammar> {
             * (size_of::<Rch<GcflobddNode<'grammar>>>() + size_of::<GcflobddNode<'grammar>>());
         total_size +=
             self.bdd_node_table.len() * (size_of::<Rch<BddNode>>() + size_of::<BddNode>());
-        total_size +=
-            self.return_map_table.len() * (size_of::<Rch<ReturnMap>>() + size_of::<ReturnMap>());
         total_size += self.reduce_matrix_table.len()
             * (size_of::<Rch<Vec<usize>>>() + size_of::<Vec<usize>>());
 
@@ -329,38 +322,6 @@ impl<'grammar> Context<'grammar> {
         });
 
         total_size
-    }
-
-    fn gcflobdd_node_table_gc(node_table: &mut HashSet<Rch<GcflobddNode<'grammar>>>) {
-        let mut to_remove = Vec::new();
-        for v in node_table.iter() {
-            if Rc::strong_count(v) == 1 {
-                to_remove.push(v.clone());
-            }
-        }
-
-        while let Some(v) = to_remove.pop() {
-            if !node_table.remove(&*v) {
-                continue;
-            }
-            let node = Rc::try_unwrap(v).unwrap();
-            let mut children = Vec::new();
-            if let crate::gcflobdd::node::GcflobddNodeType::Internal(internal) = &node.node {
-                for layer in &internal.connections {
-                    for conn in layer {
-                        children.push(conn.entry_point.clone());
-                    }
-                }
-            }
-
-            drop(node);
-
-            for child in children {
-                if node_table.contains(&*child) && Rc::strong_count(&child) == 2 {
-                    to_remove.push(child);
-                }
-            }
-        }
     }
 
     fn bdd_node_table_gc(node_table: &mut HashSet<Rch<BddNode>>) {
@@ -404,14 +365,70 @@ impl<'grammar> Context<'grammar> {
         self.int_op_cache.iter_mut().for_each(|map| map.clear());
         self.pair_map_cache.clear();
         self.bdd_pair_map_cache.clear();
-        Self::gcflobdd_node_table_gc(&mut self.gcflobdd_node_table);
+
+        let mut to_remove_nodes = Vec::new();
+        for v in self.gcflobdd_node_table.iter() {
+            if Rc::strong_count(v) == 1 {
+                to_remove_nodes.push(v.clone());
+            }
+        }
+
+        let mut to_remove_connections = Vec::new();
+        for v in self.connection_table.iter() {
+            if Rc::strong_count(v) == 1 {
+                to_remove_connections.push(v.clone());
+            }
+        }
+
+        while !to_remove_nodes.is_empty() || !to_remove_connections.is_empty() {
+            while let Some(v) = to_remove_nodes.pop() {
+                if !self.gcflobdd_node_table.remove(&*v) {
+                    continue;
+                }
+                let node = Rc::try_unwrap(v).unwrap();
+                let mut conn_children = Vec::new();
+                if let crate::gcflobdd::node::GcflobddNodeType::Internal(internal) = &node.node {
+                    conn_children.push(internal.0.clone());
+                }
+                drop(node);
+
+                for child in conn_children {
+                    if self.connection_table.contains(&*child) && Rc::strong_count(&child) == 2 {
+                        to_remove_connections.push(child);
+                    }
+                }
+            }
+
+            while let Some(v) = to_remove_connections.pop() {
+                if !self.connection_table.remove(&*v) {
+                    continue;
+                }
+                let conn = Rc::try_unwrap(v).unwrap();
+                let node_children = vec![conn.entry_point.clone()];
+                let mut conn_children = Vec::new();
+                if let crate::gcflobdd::connection::ReturnMapT::NonTerminal(conns) =
+                    &conn.return_map
+                {
+                    for c in conns {
+                        conn_children.push(c.clone());
+                    }
+                }
+                drop(conn);
+
+                for child in node_children {
+                    if self.gcflobdd_node_table.contains(&*child) && Rc::strong_count(&child) == 2 {
+                        to_remove_nodes.push(child);
+                    }
+                }
+                for child in conn_children {
+                    if self.connection_table.contains(&*child) && Rc::strong_count(&child) == 2 {
+                        to_remove_connections.push(child);
+                    }
+                }
+            }
+        }
+
         Self::bdd_node_table_gc(&mut self.bdd_node_table);
-        // clear return map after node table gc
-        self.return_map_table = self
-            .return_map_table
-            .drain()
-            .filter(|v| Rc::strong_count(v) > 1)
-            .collect();
         self.reduce_matrix_table = self
             .reduce_matrix_table
             .drain()
