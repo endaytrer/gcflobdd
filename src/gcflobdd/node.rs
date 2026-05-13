@@ -289,6 +289,13 @@ impl<'grammar> GcflobddNode<'grammar> {
         if let Some(t) = context.borrow().get_pair_product_cache(lhs, rhs) {
             return t;
         }
+        if Rc::ptr_eq(lhs, rhs) {
+            let ans = (lhs.clone(), (0..lhs.num_exits).map(|i| (i, i)).collect());
+            context
+                .borrow_mut()
+                .set_pair_product_cache(lhs, rhs, ans.clone());
+            return ans;
+        }
         let ans = match (&lhs.node, &rhs.node) {
             (GcflobddNodeType::DontCare, GcflobddNodeType::DontCare) => {
                 (Self::mk_no_distinction(lhs.grammar, context), vec![(0, 0)])

@@ -64,7 +64,6 @@ impl<'grammar, T: std::fmt::Debug + Hash> std::fmt::Debug for ConnectionT<'gramm
 }
 
 pub(crate) type Connection<'grammar> = ConnectionT<'grammar, usize>;
-pub(crate) type ConnectionPair<'grammar> = ConnectionT<'grammar, (usize, usize)>;
 
 impl<'grammar> Connection<'grammar> {
     pub fn mk_no_distinction(

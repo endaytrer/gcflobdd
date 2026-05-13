@@ -2,7 +2,7 @@ use crate::gcflobdd::Gcflobdd;
 use crate::gcflobdd::GcflobddInt;
 use crate::gcflobdd::bdd::connection::{BddConnection, BddConnectionPair};
 use crate::gcflobdd::bdd::node::BddNode;
-use crate::gcflobdd::connection::{Connection, ConnectionPair};
+use crate::gcflobdd::connection::Connection;
 use crate::gcflobdd::node::GcflobddNode;
 use crate::gcflobdd::node::PairMapResult;
 use crate::gcflobdd::node::PairProductResult;
@@ -303,12 +303,12 @@ impl<'grammar> Context<'grammar> {
             * (size_of::<Rch<Vec<usize>>>() + size_of::<Vec<usize>>());
 
         total_size += self.pair_product_cache.len()
-            * (size_of::<(u64, u64)>() + size_of::<ConnectionPair<'grammar>>());
+            * (size_of::<(u64, u64)>() + size_of::<PairProductResult<'grammar>>());
         total_size += self.bdd_pair_product_cache.len()
             * (size_of::<(u64, u64)>() + size_of::<BddConnectionPair>());
 
         total_size += self.pair_map_cache.len()
-            * (size_of::<(u64, u64, u64)>() + size_of::<Connection<'grammar>>());
+            * (size_of::<(u64, u64, u64)>() + size_of::<PairMapResult<'grammar>>());
         total_size += self.bdd_pair_map_cache.len()
             * (size_of::<(u64, u64, u64)>() + size_of::<BddConnection>());
 
