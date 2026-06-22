@@ -102,7 +102,8 @@ pub fn declare_grammar(input: TokenStream) -> TokenStream {
             }
         }
     }
-    let wrapper_ident = |components: &[Type]| -> Ident { wrapper_of[&components_key(components)].clone() };
+    let wrapper_ident =
+        |components: &[Type]| -> Ident { wrapper_of[&components_key(components)].clone() };
 
     // One grouping wrapper per declared grammar: its grouping is
     // `RecursiveGrouping<G>`, a foreign generic type that can't own a table
@@ -150,9 +151,9 @@ pub fn declare_grammar(input: TokenStream) -> TokenStream {
         let ident = &group_wrapper[gi];
         grammar_items.push(quote! {
             #[derive(Hash, PartialEq, Eq)]
-            pub struct #ident(gcflobdd::gcflobdd::connection_graph::RecursiveGrouping<#lhs>);
+            pub struct #ident(gcflobdd::gcflobdd::grouping::RecursiveGrouping<#lhs>);
 
-            impl gcflobdd::gcflobdd::connection_graph::Grouping for #ident {
+            impl gcflobdd::gcflobdd::grouping::Grouping for #ident {
                 type Grammar = #lhs;
                 fn group_table() -> &'static ::std::thread::LocalKey<
                     ::std::cell::RefCell<gcflobdd::utils::HashSet<gcflobdd::utils::hash_cache::Rch<Self>>>,
@@ -160,13 +161,13 @@ pub fn declare_grammar(input: TokenStream) -> TokenStream {
                     &Self::GROUP_TABLE
                 }
                 fn mk_no_distinction() -> gcflobdd::utils::hash_cache::Rch<Self> {
-                    <Self as gcflobdd::gcflobdd::connection_graph::Grouping>::intern(#ident(
-                        gcflobdd::gcflobdd::connection_graph::RecursiveGrouping::<#lhs>::mk_no_distinction(),
+                    <Self as gcflobdd::gcflobdd::grouping::Grouping>::intern(#ident(
+                        gcflobdd::gcflobdd::grouping::RecursiveGrouping::<#lhs>::mk_no_distinction(),
                     ))
                 }
                 fn mk_distinction(x: usize) -> gcflobdd::utils::hash_cache::Rch<Self> {
-                    <Self as gcflobdd::gcflobdd::connection_graph::Grouping>::intern(#ident(
-                        gcflobdd::gcflobdd::connection_graph::RecursiveGrouping::<#lhs>::mk_distinction(x),
+                    <Self as gcflobdd::gcflobdd::grouping::Grouping>::intern(#ident(
+                        gcflobdd::gcflobdd::grouping::RecursiveGrouping::<#lhs>::mk_distinction(x),
                     ))
                 }
                 fn num_exits(&self) -> usize {
@@ -196,29 +197,29 @@ pub fn declare_grammar(input: TokenStream) -> TokenStream {
         // The wrapped `gcflobdd` connection type. Its child (if any) is the
         // *child wrapper*, so every nesting level is a table-owning local type.
         let inner: Type = if rest.is_empty() {
-            parse_quote!(gcflobdd::gcflobdd::connection_graph::Connection1<#head>)
+            parse_quote!(gcflobdd::gcflobdd::connection::Connection1<#head>)
         } else {
             let child = wrapper_ident(rest);
-            parse_quote!(gcflobdd::gcflobdd::connection_graph::ConnectionK<#head, #child>)
+            parse_quote!(gcflobdd::gcflobdd::connection::ConnectionK<#head, #child>)
         };
 
         wrapper_items.push(quote! {
             #[derive(Hash, PartialEq, Eq)]
             pub struct #ident(gcflobdd::utils::hash_cache::Rch<#inner>);
 
-            impl gcflobdd::gcflobdd::connection_graph::Connection for #ident {
+            impl gcflobdd::gcflobdd::connection::Connection for #ident {
                 fn conn_table() -> &'static ::std::thread::LocalKey<
                     ::std::cell::RefCell<gcflobdd::utils::HashSet<gcflobdd::utils::hash_cache::Rch<Self>>>,
                 > {
                     &Self::CONN_TABLE
                 }
                 fn mk_distinction(x: usize) -> gcflobdd::utils::hash_cache::Rch<Self> {
-                    <Self as gcflobdd::gcflobdd::connection_graph::Connection>::intern(#ident(
+                    <Self as gcflobdd::gcflobdd::connection::Connection>::intern(#ident(
                         <#inner>::mk_distinction(x),
                     ))
                 }
                 fn mk_no_distinction() -> gcflobdd::utils::hash_cache::Rch<Self> {
-                    <Self as gcflobdd::gcflobdd::connection_graph::Connection>::intern(#ident(
+                    <Self as gcflobdd::gcflobdd::connection::Connection>::intern(#ident(
                         <#inner>::mk_no_distinction(),
                     ))
                 }

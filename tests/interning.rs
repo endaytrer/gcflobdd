@@ -2,7 +2,8 @@
 //! `declare_grammar!` generates for the connection-graph engine.
 
 use gcflobdd::declare_grammar;
-use gcflobdd::gcflobdd::connection_graph::{Connection, OpCached};
+use gcflobdd::gcflobdd::OpCached;
+use gcflobdd::gcflobdd::connection::Connection;
 use gcflobdd::grammar::{RecursiveGrammar, Unit};
 use std::rc::Rc;
 

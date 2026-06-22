@@ -1,7 +1,8 @@
 use std::fmt::Debug;
 
-use crate::gcflobdd::connection_graph::{
-    BddGrouping, Connection, Grouping, UnitGrouping,
+use crate::gcflobdd::{
+    connection::Connection,
+    grouping::{BddGrouping, Grouping, UnitGrouping},
 };
 use crate::utils::hash_cache::Rch;
 pub trait GhddGrammar {
