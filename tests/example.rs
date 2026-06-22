@@ -1,6 +1,6 @@
 use gcflobdd::declare_grammar;
-use gcflobdd::grammar::declarative::GhddGrammar;
-use gcflobdd::grammar::declarative::Unit;
+use gcflobdd::grammar::GhddGrammar;
+use gcflobdd::grammar::Unit;
 
 // Grammars may reference one another; each level's NUM_VARS is the sum over its
 // components, and shared component suffixes share generated wrapper types.

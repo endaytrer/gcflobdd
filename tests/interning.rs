@@ -3,7 +3,7 @@
 
 use gcflobdd::declare_grammar;
 use gcflobdd::gcflobdd::connection_graph::{Connection, OpCached};
-use gcflobdd::grammar::declarative::{RecursiveGrammar, Unit};
+use gcflobdd::grammar::{RecursiveGrammar, Unit};
 use std::rc::Rc;
 
 declare_grammar! {

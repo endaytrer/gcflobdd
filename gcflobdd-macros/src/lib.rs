@@ -133,12 +133,12 @@ pub fn declare_grammar(input: TokenStream) -> TokenStream {
         grammar_items.push(quote! {
             pub struct #lhs;
 
-            impl gcflobdd::grammar::declarative::GhddGrammar for #lhs {
+            impl gcflobdd::grammar::GhddGrammar for #lhs {
                 const NUM_VARS: usize = #num_vars;
                 type Grouping = #grouping;
             }
 
-            impl gcflobdd::grammar::declarative::RecursiveGrammar for #lhs {
+            impl gcflobdd::grammar::RecursiveGrammar for #lhs {
                 type Connection = #connection;
             }
         });

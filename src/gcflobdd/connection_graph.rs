@@ -1,5 +1,5 @@
 use crate::{
-    grammar::declarative::{BddGrammar, GhddGrammar, RecursiveGrammar, Unit},
+    grammar::{BddGrammar, GhddGrammar, RecursiveGrammar, Unit},
     utils::{
         HashMap, HashSet,
         hash_cache::{HashCached, Rch},
