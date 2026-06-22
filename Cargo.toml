@@ -1,0 +1,18 @@
+[package]
+name = "gcflobdd"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = ["gcflobdd-macros"]
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+gcflobdd-macros = { path = "gcflobdd-macros" }
+rustc-hash = { version = "2.1.2", optional = true }
+
+[features]
+default = ["fx-hash"]
+fx-hash = ["dep:rustc-hash", "gcflobdd-macros/fx-hash"]
