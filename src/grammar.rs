@@ -9,6 +9,7 @@ pub trait GhddGrammar {
     const NUM_VARS: usize;
     type Grouping: Grouping<Grammar = Self>;
     fn mk_distinction(x: usize) -> Rch<Self::Grouping> {
+        debug_assert!(x < Self::NUM_VARS, "variable index out of range");
         Self::Grouping::mk_distinction(x)
     }
     fn mk_no_distinction() -> Rch<Self::Grouping> {

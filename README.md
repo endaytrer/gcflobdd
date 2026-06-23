@@ -41,6 +41,8 @@ let _g = Quad::mk_distinction(0);
 
 ## Status
 
-Construction (`mk_distinction`/`mk_no_distinction`) and hash-consing work. The
-operations (`pair_product`/`pair_map`/`reduce`) have cache infrastructure in
-place but the recursive bodies, and BDD groupings, are not yet ported.
+Construction (`mk_distinction`/`mk_no_distinction`), hash-consing, and the three
+core operations — `pair_product`, `reduce`, and `pair_map` (Apply, implemented as
+`pair_product` + relabel + `reduce`) — work for recursive grammars, each cached on
+the per-type operation tables. BDD groupings (`BddGrouping<N>`) and a per-type GC
+for the pointer-keyed caches remain unimplemented.

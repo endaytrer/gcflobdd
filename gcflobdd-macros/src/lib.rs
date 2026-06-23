@@ -173,6 +173,25 @@ pub fn declare_grammar(input: TokenStream) -> TokenStream {
                 fn num_exits(&self) -> usize {
                     self.0.num_exits()
                 }
+                fn pair_product_inner(
+                    lhs: &gcflobdd::utils::hash_cache::Rch<Self>,
+                    rhs: &gcflobdd::utils::hash_cache::Rch<Self>,
+                ) -> (Self, ::std::vec::Vec<(usize, usize)>) {
+                    let (rg, map) =
+                        gcflobdd::gcflobdd::grouping::RecursiveGrouping::<#lhs>::pair_product(
+                            &lhs.0, &rhs.0,
+                        );
+                    (#ident(rg), map)
+                }
+                fn reduce_inner(
+                    this: &gcflobdd::utils::hash_cache::Rch<Self>,
+                    reduce_map: &[usize],
+                    num_exits: usize,
+                ) -> Self {
+                    #ident(gcflobdd::gcflobdd::grouping::RecursiveGrouping::<#lhs>::reduce(
+                        &this.0, reduce_map, num_exits,
+                    ))
+                }
             }
 
             impl #ident {
@@ -222,6 +241,28 @@ pub fn declare_grammar(input: TokenStream) -> TokenStream {
                     <Self as gcflobdd::gcflobdd::connection::Connection>::intern(#ident(
                         <#inner>::mk_no_distinction(),
                     ))
+                }
+                fn num_exits(&self) -> usize {
+                    self.0.num_exits()
+                }
+                fn pair_product_inner(
+                    lhs: &gcflobdd::utils::hash_cache::Rch<Self>,
+                    rhs: &gcflobdd::utils::hash_cache::Rch<Self>,
+                ) -> (Self, ::std::vec::Vec<(usize, usize)>) {
+                    let (v, map) = <#inner>::pair_product(&lhs.0, &rhs.0);
+                    (
+                        #ident(::std::rc::Rc::new(gcflobdd::utils::hash_cache::HashCached::new(v))),
+                        map,
+                    )
+                }
+                fn reduce_inner(
+                    this: &gcflobdd::utils::hash_cache::Rch<Self>,
+                    reduce_map: &[usize],
+                    num_exits: usize,
+                ) -> Self {
+                    #ident(::std::rc::Rc::new(gcflobdd::utils::hash_cache::HashCached::new(
+                        <#inner>::reduce(&this.0, reduce_map, num_exits),
+                    )))
                 }
             }
 
