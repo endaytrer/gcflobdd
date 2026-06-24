@@ -30,6 +30,11 @@ let _g = Quad::mk_distinction(0);
   `Connection` traits (both hash-consed via `intern`), `OpCached` (per-type
   `pair_product`/`pair_map`/`reduce` caches keyed on `Rc` pointer identity), and
   the generic `Connection1`/`ConnectionK`/`RecursiveGrouping` building blocks.
+- `src/gcflobdd/typed.rs` — `GcflobddT<G, T>`, the user-facing diagram: a
+  grammar `G`'s entry grouping plus a typed return map (`Vec<T>`). The boolean
+  specialization `Gcflobdd<G>` provides `mk_projection`/`mk_and`/`mk_or`/`mk_not`/…
+  and `find_one_satisfiable_assignment`. It carries no per-diagram op cache — the
+  grouping/connection caches already memoize the work.
 - `src/grammar/declarative.rs` — the compile-time grammar traits (`GhddGrammar`,
   `RecursiveGrammar`) and the built-in `Unit` / `BddGrammar<N>` grammars.
 - `src/utils/` — `HashCached`/`Rch` (hash-cached `Rc`) and the `HashSet`/`HashMap`
@@ -44,5 +49,9 @@ let _g = Quad::mk_distinction(0);
 Construction (`mk_distinction`/`mk_no_distinction`), hash-consing, and the three
 core operations — `pair_product`, `reduce`, and `pair_map` (Apply, implemented as
 `pair_product` + relabel + `reduce`) — work for recursive grammars, each cached on
-the per-type operation tables. BDD groupings (`BddGrouping<N>`) and a per-type GC
+the per-type operation tables. On top of those, the typed wrapper
+`GcflobddT<G, T>` (`src/gcflobdd/typed.rs`) gives the boolean `Gcflobdd<G>` with
+the usual connectives, `find_one_satisfiable_assignment`, and `find_one_path_to`;
+`tests/n_queens.rs` solves NQueens over `build.rs`-generated grammars (n = 8..=14).
+BDD groupings (`BddGrouping<N>`), a per-diagram operation cache, and a per-type GC
 for the pointer-keyed caches remain unimplemented.

@@ -21,6 +21,10 @@ pub trait Grouping: OpCached {
     fn mk_distinction(x: usize) -> Rch<Self>;
     fn num_exits(&self) -> usize;
 
+    /// One assignment of this grouping's variables (`None` = don't care) that
+    /// reaches `exit`.
+    fn find_one_path_to(&self, exit: usize) -> Vec<Option<bool>>;
+
     /// Hash-cons `value` into this type's `group_table`.
     fn intern(value: Self) -> Rch<Self> {
         Self::group_table().with(|table| intern_in(table, value))
@@ -134,6 +138,12 @@ impl Grouping for UnitGrouping {
         debug_assert!(x == 0);
         Self::intern(Self::Fork)
     }
+    fn find_one_path_to(&self, exit: usize) -> Vec<Option<bool>> {
+        match self {
+            Self::DontCare => vec![None],
+            Self::Fork => vec![Some(exit != 0)],
+        }
+    }
 
     fn pair_product_inner(lhs: &Rch<Self>, rhs: &Rch<Self>) -> (Self, Vec<(usize, usize)>) {
         let l: &UnitGrouping = lhs;
@@ -177,6 +187,9 @@ impl<const N: usize> Grouping for BddGrouping<N> {
         }
     }
     fn mk_distinction(_x: usize) -> Rch<Self> {
+        todo!()
+    }
+    fn find_one_path_to(&self, _exit: usize) -> Vec<Option<bool>> {
         todo!()
     }
     fn pair_product_inner(_lhs: &Rch<Self>, _rhs: &Rch<Self>) -> (Self, Vec<(usize, usize)>) {
@@ -226,6 +239,12 @@ impl<T: RecursiveGrammar> RecursiveGrouping<T> {
         match self {
             Self::DontCare => 1,
             Self::Connection { connection_diagram } => connection_diagram.num_exits(),
+        }
+    }
+    pub fn find_one_path_to(&self, exit: usize) -> Vec<Option<bool>> {
+        match self {
+            Self::DontCare => vec![None; T::NUM_VARS],
+            Self::Connection { connection_diagram } => connection_diagram.find_one_path_to(exit),
         }
     }
 

@@ -22,6 +22,10 @@ pub trait Connection: OpCached {
     fn mk_no_distinction() -> Rch<Self>;
     fn num_exits(&self) -> usize;
 
+    /// One assignment of this connection's variables (`None` = don't care) that
+    /// reaches `exit`.
+    fn find_one_path_to(&self, exit: usize) -> Vec<Option<bool>>;
+
     /// Hash-cons `value` into this type's `conn_table`.
     fn intern(value: Self) -> Rch<Self> {
         Self::conn_table().with(|table| intern_in(table, value))
@@ -143,6 +147,9 @@ impl<T: GhddGrammar> Connection1<T> {
         Self {
             grouping: T::Grouping::reduce(&this.grouping, reduce_map, num_exits),
         }
+    }
+    pub fn find_one_path_to(&self, exit: usize) -> Vec<Option<bool>> {
+        self.grouping.find_one_path_to(exit)
     }
 }
 
@@ -331,6 +338,22 @@ impl<T: GhddGrammar, C: Connection> ConnectionK<T, C> {
             rest_children,
             num_exits,
         }
+    }
+
+    pub fn find_one_path_to(&self, exit: usize) -> Vec<Option<bool>> {
+        // find a grouping exit `k` whose child has an exit `ce` landing on `exit`,
+        // then concatenate the head path with the child's path.
+        for k in 0..self.grouping.num_exits() {
+            let child = self.child(k);
+            for ce in 0..child.num_exits() {
+                if self.rm_at(k, ce) == exit {
+                    let mut path = self.grouping.find_one_path_to(k);
+                    path.extend(child.find_one_path_to(ce));
+                    return path;
+                }
+            }
+        }
+        unreachable!("exit {exit} is unreachable in this connection")
     }
 }
 

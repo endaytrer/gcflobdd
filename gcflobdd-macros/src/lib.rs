@@ -173,6 +173,12 @@ pub fn declare_grammar(input: TokenStream) -> TokenStream {
                 fn num_exits(&self) -> usize {
                     self.0.num_exits()
                 }
+                fn find_one_path_to(
+                    &self,
+                    exit: usize,
+                ) -> ::std::vec::Vec<::std::option::Option<bool>> {
+                    self.0.find_one_path_to(exit)
+                }
                 fn pair_product_inner(
                     lhs: &gcflobdd::utils::hash_cache::Rch<Self>,
                     rhs: &gcflobdd::utils::hash_cache::Rch<Self>,
@@ -244,6 +250,12 @@ pub fn declare_grammar(input: TokenStream) -> TokenStream {
                 }
                 fn num_exits(&self) -> usize {
                     self.0.num_exits()
+                }
+                fn find_one_path_to(
+                    &self,
+                    exit: usize,
+                ) -> ::std::vec::Vec<::std::option::Option<bool>> {
+                    self.0.find_one_path_to(exit)
                 }
                 fn pair_product_inner(
                     lhs: &gcflobdd::utils::hash_cache::Rch<Self>,

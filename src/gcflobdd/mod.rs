@@ -9,6 +9,10 @@ pub mod connection;
 
 pub mod grouping;
 
+pub mod typed;
+
+pub use typed::{Gcflobdd, GcflobddT};
+
 /// Intern `value` into a per-type table: if an equal value is already present,
 /// return the canonical `Rch`; otherwise insert and return the new one. After
 /// interning, `Rc::as_ptr` is a valid identity for the value (used by the
