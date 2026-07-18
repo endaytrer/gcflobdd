@@ -14,11 +14,16 @@ use std::rc::Rc;
 
 use crate::gcflobdd::connection::ConnectionPair;
 use crate::gcflobdd::context::{BoolOperation, Context, IntOperation};
-use crate::gcflobdd::node::GcflobddNode;
+use crate::gcflobdd::node::{GcflobddNode, log2_add};
 use crate::gcflobdd::return_map::{complement, inverse_lookup};
 use crate::grammar::Grammar;
 use connection::ConnectionT;
 use return_map::ReturnMapT;
+
+#[cfg(feature = "fx-hash")]
+use rustc_hash::FxHashMap as HashMap;
+#[cfg(not(feature = "fx-hash"))]
+use std::collections::HashMap;
 
 #[derive(Clone)]
 pub struct GcflobddT<'grammar, T> {
@@ -184,6 +189,23 @@ impl<'grammar> Gcflobdd<'grammar> {
     pub fn find_one_satisfiable_assignment(&self) -> Option<Vec<Option<bool>>> {
         self.find_one_path_to(&true)
     }
+
+    /// Returns `log2` of the number of satisfying assignments over the whole
+    /// `grammar.num_vars`-bit variable space (i.e. `log2(satcount)`), rather
+    /// than the raw count, so the result stays finite for wide headers where
+    /// `2^num_vars` would overflow an `f64`. An unsatisfiable function returns
+    /// `f64::NEG_INFINITY` (`log2(0)`).
+    pub fn sat_count(&self) -> f64 {
+        let mut memo = HashMap::default();
+        let exit_counts = GcflobddNode::log2_exit_counts(&self.connection.entry_point, &mut memo);
+        let mut acc = f64::NEG_INFINITY;
+        for (exit, &value) in self.connection.return_map.iter().enumerate() {
+            if value {
+                acc = log2_add(acc, exit_counts[exit]);
+            }
+        }
+        acc
+    }
 }
 
 impl Not for Gcflobdd<'_> {
@@ -241,6 +263,14 @@ impl<'grammar, T: Eq> GcflobddT<'grammar, T> {
     pub fn find_one_path_to(&self, value: &T) -> Option<Vec<Option<bool>>> {
         let index = inverse_lookup(&self.connection.return_map, value)?;
         Some(self.connection.entry_point.find_one_path_to(index))
+    }
+}
+impl<'grammar, T: Clone> GcflobddT<'grammar, T> {
+    /// Evaluate the function at a concrete assignment. `assignment` is indexed
+    /// by variable index and must have length `grammar.num_vars`.
+    pub fn evaluate(&self, assignment: &[bool]) -> T {
+        let exit = self.connection.entry_point.evaluate(assignment);
+        self.connection.return_map[exit].clone()
     }
 }
 impl<'grammar, T: Copy> GcflobddT<'grammar, T> {

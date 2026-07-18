@@ -42,6 +42,12 @@ impl Bdd {
     pub fn find_one_path_to(&self, value: usize, bdd_size: usize) -> Option<Vec<Option<bool>>> {
         self.0.find_one_path_to(value, 0, bdd_size)
     }
+    pub fn log2_exit_counts(&self, bdd_size: usize, num_exits: usize) -> Vec<f64> {
+        BddNode::log2_exit_counts(&self.0, bdd_size, num_exits)
+    }
+    pub fn evaluate(&self, assignment: &[bool]) -> usize {
+        self.0.evaluate(assignment)
+    }
     pub fn pair_product(
         &self,
         rhs: &Self,

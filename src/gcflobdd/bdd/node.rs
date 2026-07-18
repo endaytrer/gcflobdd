@@ -4,6 +4,7 @@ use crate::{
     gcflobdd::{
         bdd::connection::{BddConnection, BddConnectionPair},
         context::Context,
+        node::log2_add,
     },
     utils::hash_cache::Rch,
 };
@@ -73,6 +74,78 @@ impl BddNode {
 
     fn mk_terminal(i: usize, context: &RefCell<Context<'_>>) -> Rch<Self> {
         context.borrow_mut().add_bdd_node(Self::Terminal(i))
+    }
+
+    /// The lowest variable index this (sub-)BDD may branch on, or `bdd_size`
+    /// when it is a terminal (no variables left).
+    fn first_var(node: &Rch<Self>, bdd_size: usize) -> usize {
+        match node.as_ref().as_ref() {
+            Self::Terminal(_) => bdd_size,
+            Self::Internal(inner) => inner.var_id,
+        }
+    }
+
+    /// `log2` of the number of assignments (over variables `[first_var..bdd_size)`)
+    /// routed to each exit of this sub-BDD. Memoized by node pointer.
+    fn log2_counts_below(
+        node: &Rch<Self>,
+        bdd_size: usize,
+        num_exits: usize,
+        memo: &mut HashMap<usize, Vec<f64>>,
+    ) -> Vec<f64> {
+        let key = Rc::as_ptr(node) as usize;
+        if let Some(v) = memo.get(&key) {
+            return v.clone();
+        }
+        let res = match node.as_ref().as_ref() {
+            Self::Terminal(t) => {
+                let mut v = vec![f64::NEG_INFINITY; num_exits];
+                v[*t] = 0.0;
+                v
+            }
+            Self::Internal(inner) => {
+                let zero = Self::log2_counts_below(&inner.zero_branch, bdd_size, num_exits, memo);
+                let one = Self::log2_counts_below(&inner.one_branch, bdd_size, num_exits, memo);
+                // Don't-care variables skipped between this node and each child.
+                let skip_zero =
+                    (Self::first_var(&inner.zero_branch, bdd_size) - (inner.var_id + 1)) as f64;
+                let skip_one =
+                    (Self::first_var(&inner.one_branch, bdd_size) - (inner.var_id + 1)) as f64;
+                (0..num_exits)
+                    .map(|e| log2_add(skip_zero + zero[e], skip_one + one[e]))
+                    .collect()
+            }
+        };
+        memo.insert(key, res.clone());
+        res
+    }
+
+    /// `log2` of the number of assignments (over all `bdd_size` variables)
+    /// routed to each exit of this BDD leaf.
+    pub(super) fn log2_exit_counts(
+        node: &Rch<Self>,
+        bdd_size: usize,
+        num_exits: usize,
+    ) -> Vec<f64> {
+        let mut memo = HashMap::default();
+        let leading = Self::first_var(node, bdd_size) as f64;
+        let below = Self::log2_counts_below(node, bdd_size, num_exits, &mut memo);
+        below.into_iter().map(|c| leading + c).collect()
+    }
+
+    /// Evaluate the exit index this BDD leaf routes `assignment` to.
+    /// `assignment` is indexed by the leaf-local variable id.
+    pub(super) fn evaluate(&self, assignment: &[bool]) -> usize {
+        match self {
+            Self::Terminal(t) => *t,
+            Self::Internal(inner) => {
+                if assignment[inner.var_id] {
+                    inner.one_branch.evaluate(assignment)
+                } else {
+                    inner.zero_branch.evaluate(assignment)
+                }
+            }
+        }
     }
 
     pub fn find_one_path_to(

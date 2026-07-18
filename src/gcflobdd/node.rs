@@ -108,10 +108,112 @@ impl Hash for InternalNode<'_> {
     }
 }
 
+/// Add two values that live in the base-2 logarithmic domain, i.e. given
+/// `a = log2(x)` and `b = log2(y)` return `log2(x + y)` without ever
+/// materialising `x` or `y` (which may overflow `f64`). `f64::NEG_INFINITY`
+/// represents `log2(0)`.
+#[inline]
+pub(crate) fn log2_add(a: f64, b: f64) -> f64 {
+    if a == f64::NEG_INFINITY {
+        return b;
+    }
+    if b == f64::NEG_INFINITY {
+        return a;
+    }
+    let (hi, lo) = if a >= b { (a, b) } else { (b, a) };
+    hi + (1.0 + (lo - hi).exp2()).log2()
+}
+
 impl<'grammar> GcflobddNode<'grammar> {
     pub fn get_num_exits(&self) -> usize {
         self.num_exits
     }
+
+    /// For each of this node's exits, return `log2` of the number of
+    /// assignments (over the node's `grammar.num_vars` variables) that are
+    /// routed to that exit. The returned vector has length `num_exits` and its
+    /// `log2`-domain entries sum (via [`log2_add`]) to `grammar.num_vars`.
+    ///
+    /// The GCFLOBDD node tables form a shared DAG, so results are memoized by
+    /// node pointer to avoid an exponential blow-up.
+    pub(super) fn log2_exit_counts(
+        node: &Rch<Self>,
+        memo: &mut HashMap<usize, Vec<f64>>,
+    ) -> Vec<f64> {
+        let key = Rc::as_ptr(node) as usize;
+        if let Some(v) = memo.get(&key) {
+            return v.clone();
+        }
+        let res = match &node.node {
+            // A don't-care node has a single exit that every assignment reaches.
+            GcflobddNodeType::DontCare => vec![node.grammar.num_vars as f64],
+            // A fork spans exactly one variable: exit 0 for false, exit 1 for true.
+            GcflobddNodeType::Fork => vec![0.0, 0.0],
+            GcflobddNodeType::Bdd(bdd) => {
+                bdd.log2_exit_counts(node.grammar.num_vars, node.num_exits)
+            }
+            GcflobddNodeType::Internal(internal_node) => {
+                // Propagate a distribution over connection indices across the
+                // matched layers. `dist[c]` is log2 of the number of
+                // assignments (to the variables consumed so far) that select
+                // connection `c` in the current layer.
+                let mut dist = vec![f64::NEG_INFINITY; internal_node.connections[0].len()];
+                dist[0] = 0.0;
+                let num_layers = internal_node.connections.len();
+                for (i, connection_list) in internal_node.connections.iter().enumerate() {
+                    let next_size = if i == num_layers - 1 {
+                        node.num_exits
+                    } else {
+                        internal_node.connections[i + 1].len()
+                    };
+                    let mut next = vec![f64::NEG_INFINITY; next_size];
+                    for (c, &weight) in dist.iter().enumerate() {
+                        if weight == f64::NEG_INFINITY {
+                            continue;
+                        }
+                        let connection = &connection_list[c];
+                        let sub = Self::log2_exit_counts(&connection.entry_point, memo);
+                        for (inner, &sub_count) in sub.iter().enumerate() {
+                            let target = connection.return_map[inner];
+                            next[target] = log2_add(next[target], weight + sub_count);
+                        }
+                    }
+                    dist = next;
+                }
+                dist
+            }
+        };
+        memo.insert(key, res.clone());
+        res
+    }
+
+    /// Evaluate the (opaque) exit index this node routes `assignment` to.
+    /// `assignment` must have length `grammar.num_vars`. Used as a testing
+    /// oracle and by callers that want a concrete point value.
+    pub(super) fn evaluate(&self, assignment: &[bool]) -> usize {
+        match &self.node {
+            GcflobddNodeType::DontCare => 0,
+            GcflobddNodeType::Fork => assignment[0] as usize,
+            GcflobddNodeType::Bdd(bdd) => bdd.evaluate(assignment),
+            GcflobddNodeType::Internal(internal_node) => {
+                let GrammarNodeType::Internal(grammar_children) = &self.grammar.node else {
+                    unreachable!("Internal node must have an Internal grammar")
+                };
+                let mut connection_idx = 0;
+                let mut offset = 0;
+                for (i, connection_list) in internal_node.connections.iter().enumerate() {
+                    let child = &grammar_children[i];
+                    let sub = &assignment[offset..offset + child.num_vars];
+                    offset += child.num_vars;
+                    let connection = &connection_list[connection_idx];
+                    let inner = connection.entry_point.evaluate(sub);
+                    connection_idx = connection.return_map[inner];
+                }
+                connection_idx
+            }
+        }
+    }
+
     pub fn mk_distinction(
         i: usize,
         grammar: &'grammar Rc<GrammarNode>,

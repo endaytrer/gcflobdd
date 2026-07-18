@@ -201,3 +201,131 @@ fn test_n_queen_failed() {
         .mk_or(&Gcflobdd::mk_projection(3, &grammar, &context), &context);
     assert_ne!(c2, Gcflobdd::mk_false(&grammar, &context));
 }
+
+// ---------------------------------------------------------------------------
+// Oracle-based tests for sat_count / evaluate.
+//
+// A boolean function over `n` variables is represented as a truth table
+// (`Vec<bool>` of length `2^n`, indexed so that bit `i` of the index is the
+// value of variable `i`). We build the equivalent GCFLOBDD from minterms using
+// only the primitive operators, then check the new operations against the table.
+// ---------------------------------------------------------------------------
+
+/// Deterministic xorshift PRNG so the tests are reproducible.
+fn prng(state: &mut u64) -> u64 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    x
+}
+
+/// The assignment (indexed by variable) encoded by integer `a`.
+fn assignment_of(a: usize, n: usize) -> Vec<bool> {
+    (0..n).map(|i| (a >> i) & 1 == 1).collect()
+}
+
+/// Build the GCFLOBDD for a truth table using only primitive operators.
+fn build_from_table<'g>(
+    table: &[bool],
+    n: usize,
+    grammar: &'g Grammar,
+    context: &RefCell<Context<'g>>,
+) -> Gcflobdd<'g> {
+    let mut acc = Gcflobdd::mk_false(grammar, context);
+    for (a, &val) in table.iter().enumerate() {
+        if !val {
+            continue;
+        }
+        let mut term = Gcflobdd::mk_true(grammar, context);
+        for i in 0..n {
+            let proj = Gcflobdd::mk_projection(i, grammar, context);
+            let lit = if (a >> i) & 1 == 1 { proj } else { proj.mk_not() };
+            term = term.mk_and(&lit, context);
+        }
+        acc = acc.mk_or(&term, context);
+    }
+    acc
+}
+
+/// (grammar, n) pairs exercising every leaf/grouping shape.
+fn oracle_grammars() -> Vec<(Grammar, usize)> {
+    vec![
+        // n = 4
+        (
+            Grammar::new(&["S2 -> S1 S1".to_string(), "S1 -> a a".to_string()]).unwrap(),
+            4,
+        ),
+        (Grammar::new(&["S2 -> BDD(4)".to_string()]).unwrap(), 4),
+        (Grammar::new(&["S2 -> BDD(2) BDD(2)".to_string()]).unwrap(), 4),
+        (Grammar::new_bdd(4), 4),
+        // n = 5 (odd, forces uneven aligned splits)
+        (
+            Grammar::new(&["S -> A a".to_string(), "A -> a a a a".to_string()]).unwrap(),
+            5,
+        ),
+        (Grammar::new(&["S -> BDD(2) BDD(3)".to_string()]).unwrap(), 5),
+        // n = 6
+        (
+            Grammar::new(&["S2 -> S1 S1".to_string(), "S1 -> a a a".to_string()]).unwrap(),
+            6,
+        ),
+        (Grammar::new(&["S -> BDD(4) a a".to_string()]).unwrap(), 6),
+        // n = 8: two field-like BDD leaves + a balanced tree
+        (Grammar::new(&["S -> BDD(4) BDD(4)".to_string()]).unwrap(), 8),
+        (
+            Grammar::new(&[
+                "S3 -> S2 S2".to_string(),
+                "S2 -> S1 S1".to_string(),
+                "S1 -> a a".to_string(),
+            ])
+            .unwrap(),
+            8,
+        ),
+    ]
+}
+
+#[test]
+fn test_evaluate_matches_primitives() {
+    // `evaluate` must agree with the value implied by the minterm construction.
+    let mut state = 0x1234_5678_9abc_def0u64;
+    for (grammar, n) in oracle_grammars() {
+        assert_eq!(grammar.root.num_vars, n);
+        let context = RefCell::new(Context::default());
+        for _ in 0..4 {
+            let table: Vec<bool> = (0..(1usize << n)).map(|_| prng(&mut state) & 1 == 0).collect();
+            let f = build_from_table(&table, n, &grammar, &context);
+            for (a, &val) in table.iter().enumerate() {
+                assert_eq!(f.evaluate(&assignment_of(a, n)), val, "n={n}, a={a}");
+            }
+        }
+    }
+}
+
+#[test]
+fn test_sat_count_matches_popcount() {
+    let mut state = 0xdead_beef_cafe_babeu64;
+    for (grammar, n) in oracle_grammars() {
+        let context = RefCell::new(Context::default());
+        for _ in 0..4 {
+            let table: Vec<bool> = (0..(1usize << n)).map(|_| prng(&mut state) & 3 == 0).collect();
+            let popcount = table.iter().filter(|&&x| x).count();
+            let f = build_from_table(&table, n, &grammar, &context);
+            let log2 = f.sat_count();
+            if popcount == 0 {
+                assert_eq!(log2, f64::NEG_INFINITY);
+            } else {
+                let count = log2.exp2().round() as usize;
+                assert_eq!(count, popcount, "n={n}, log2={log2}");
+            }
+        }
+    }
+    // Boundary cases: constants.
+    for (grammar, n) in oracle_grammars() {
+        let context = RefCell::new(Context::default());
+        assert_eq!(Gcflobdd::mk_false(&grammar, &context).sat_count(), f64::NEG_INFINITY);
+        let full = Gcflobdd::mk_true(&grammar, &context).sat_count();
+        assert_eq!(full.exp2().round() as usize, 1usize << n);
+    }
+}
