@@ -109,6 +109,11 @@ impl Grammar {
             }),
         }
     }
+    /// Total number of boolean variables addressed by this grammar (the flat
+    /// variable index space is `0..num_vars`).
+    pub fn num_vars(&self) -> usize {
+        self.root.num_vars
+    }
 }
 
 #[cfg(test)]

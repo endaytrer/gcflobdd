@@ -1,0 +1,14 @@
+[package]
+name = "gcflobdd-jni"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+# `cdylib` produces libgcflobdd_jni.so for `System.loadLibrary("gcflobdd_jni")`.
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+# Depend on the core crate without its default `complex` feature so we do not
+# pull in rug/GMP (a native C dependency). `fx-hash` keeps the fast hashing.
+gcflobdd = { path = "..", default-features = false, features = ["fx-hash"] }
+jni = "0.21"
