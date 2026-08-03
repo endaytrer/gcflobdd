@@ -643,6 +643,50 @@ fn matvec_survives_gc() {
     );
 }
 
+#[test]
+fn matadd_and_scale_match_dense_oracles() {
+    let mut state = 0x3141_5926_5358_9793u64;
+    for (grammar, n) in matrix_grammars() {
+        let context = RefCell::new(Context::default());
+        let a = random_matrix(n, &mut state, 4);
+        let b = random_matrix(n, &mut state, 4);
+        let da = GcflobddT::from_matrix(&a, &grammar, &context);
+        let db = GcflobddT::from_matrix(&b, &grammar, &context);
+
+        let sum: Vec<Vec<i64>> = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| x.iter().zip(y).map(|(p, q)| p + q).collect())
+            .collect();
+        assert_entries(&da.mk_matadd(&db, &context), &sum, &format!("A + B ({n})"));
+        // ... and the canonical diagram of that matrix, not merely equal entries.
+        assert_eq!(
+            da.mk_matadd(&db, &context),
+            GcflobddT::from_matrix(&sum, &grammar, &context)
+        );
+
+        // A + (-1)A collapses to the constant zero.
+        let negated = da.mk_scale(&-1i64, &context);
+        assert_eq!(
+            da.mk_matadd(&negated, &context),
+            GcflobddT::mk_constant(0i64, &grammar, &context),
+            "A - A at {n}"
+        );
+        // Scaling by zero does too, however many exits it had.
+        assert_eq!(
+            da.mk_scale(&0i64, &context),
+            GcflobddT::mk_constant(0i64, &grammar, &context),
+            "0 * A at {n}"
+        );
+
+        let tripled: Vec<Vec<i64>> = a
+            .iter()
+            .map(|r| r.iter().map(|v| 3 * v).collect())
+            .collect();
+        assert_entries(&da.mk_scale(&3i64, &context), &tripled, "3A");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Kronecker product.
 // ---------------------------------------------------------------------------

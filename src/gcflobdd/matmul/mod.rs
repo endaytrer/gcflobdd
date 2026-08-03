@@ -79,13 +79,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::gcflobdd::GcflobddT;
-use crate::gcflobdd::connection::{Connection, ConnectionT};
+use crate::gcflobdd::connection::{Connection, ConnectionPair, ConnectionT};
 use crate::gcflobdd::context::Context;
 use crate::gcflobdd::matmul::node::{Valued, kron_node, matmul_node, matvec_node, split};
 use crate::gcflobdd::node::{GcflobddNode, GcflobddNodeType, InternalNode};
 use crate::grammar::{Grammar, GrammarNode, GrammarNodeType};
 use crate::utils::hash_cache::Rch;
-use crate::utils::{HashSet, new_hash_set};
+use crate::utils::{HashMap, HashSet, new_hash_map, new_hash_set};
 
 /// The values a matrix built out of [`GcflobddT`] can hold.
 ///
@@ -99,7 +99,36 @@ pub trait MatMulValue: Clone + PartialEq {
     fn add(&self, rhs: &Self) -> Self;
     fn mul(&self, rhs: &Self) -> Self;
     /// `coeff * self`, where `coeff` counts how many times a product occurs.
-    fn scale(&self, coeff: i64) -> Self;
+    fn scale(&self, coeff: i128) -> Self;
+
+    /// A hashable stand-in for this value, if one exists.
+    ///
+    /// Every product collapses exits that carry equal values, and searching
+    /// the value list linearly makes that quadratic -- which bites exactly
+    /// when a diagram has many exits, as a Fourier-transformed state does.
+    /// A key turns the search into a hash lookup.
+    ///
+    /// **Contract**: two values must have equal keys if and only if they are
+    /// `==`. Returning `None` (the default) is always safe and falls back to
+    /// the linear scan; a *wrong* key silently merges distinct values.
+    fn dedup_key(&self) -> Option<u128> {
+        None
+    }
+}
+
+/// The bit pattern of an `f64`, normalised so that it agrees with `==`.
+///
+/// `-0.0 == 0.0` but their bit patterns differ, and no NaN is `==` anything,
+/// so both have to be kept away from the hashed path.
+#[inline]
+fn float_key(value: f64) -> Option<u128> {
+    if value.is_nan() {
+        None
+    } else if value == 0.0 {
+        Some(0)
+    } else {
+        Some(value.to_bits() as u128)
+    }
 }
 
 macro_rules! integer_matmul_value {
@@ -118,9 +147,13 @@ macro_rules! integer_matmul_value {
                 self * rhs
             }
             #[inline]
-            fn scale(&self, coeff: i64) -> Self {
+            fn scale(&self, coeff: i128) -> Self {
                 <$t>::try_from(coeff).expect("matmul: coefficient does not fit the value type")
                     * self
+            }
+            #[inline]
+            fn dedup_key(&self) -> Option<u128> {
+                Some(*self as i128 as u128)
             }
         }
     };
@@ -143,8 +176,12 @@ impl MatMulValue for f64 {
         self * rhs
     }
     #[inline]
-    fn scale(&self, coeff: i64) -> Self {
+    fn scale(&self, coeff: i128) -> Self {
         self * coeff as f64
+    }
+    #[inline]
+    fn dedup_key(&self) -> Option<u128> {
+        float_key(*self)
     }
 }
 
@@ -159,8 +196,8 @@ impl MatMulValue for rug::Complex {
     fn mul(&self, rhs: &Self) -> Self {
         rug::Complex::with_val(self.prec(), self * rhs)
     }
-    fn scale(&self, coeff: i64) -> Self {
-        rug::Complex::with_val(self.prec(), self * coeff)
+    fn scale(&self, coeff: i128) -> Self {
+        rug::Complex::with_val(self.prec(), self * rug::Integer::from(coeff))
     }
 }
 
@@ -454,31 +491,106 @@ fn substitute<'grammar, T: MatMulValue>(
     grammar: &'grammar Grammar,
     context: &RefCell<Context<'grammar>>,
 ) -> GcflobddT<'grammar, T> {
-    let mut values: Vec<T> = Vec::with_capacity(product.return_map.len());
-    let mut reduce_map = Vec::with_capacity(product.return_map.len());
-    for combination in product.return_map.iter() {
+    let values = product.return_map.iter().map(|combination| {
         let mut value = T::zero_like(&lhs[0]);
         for (i, j, coeff) in combination.iter() {
             value = value.add(&lhs[i].mul(&rhs[j]).scale(coeff));
         }
-        reduce_map.push(match values.iter().position(|v| *v == value) {
+        value
+    });
+    collapse(&product.entry_point, values, grammar, context)
+}
+
+/// Interns exit values, giving each distinct one an index.
+///
+/// Scans while the list is short and switches to hashing once it is not: the
+/// scan wins for the handful of values a boolean or structured operand
+/// produces, and the hash saves the quadratic blow-up on a diagram with
+/// thousands of exits, such as a Fourier-transformed state. Values whose type
+/// cannot produce a [`MatMulValue::dedup_key`] simply stay on the scan.
+struct ValueSet<T> {
+    values: Vec<T>,
+    keys: HashMap<u128, usize>,
+    hashed: bool,
+    unkeyable: bool,
+}
+
+/// Where hashing starts to pay for itself, measured on the dense matrix
+/// multiply (few exits) against the QFT (many).
+const HASH_THRESHOLD: usize = 16;
+
+impl<T> Default for ValueSet<T> {
+    fn default() -> Self {
+        Self {
+            values: Vec::new(),
+            keys: new_hash_map(),
+            hashed: false,
+            unkeyable: false,
+        }
+    }
+}
+
+impl<T: MatMulValue> ValueSet<T> {
+    fn intern(&mut self, value: T) -> usize {
+        if !self.hashed && !self.unkeyable && self.values.len() >= HASH_THRESHOLD {
+            match self
+                .values
+                .iter()
+                .map(T::dedup_key)
+                .collect::<Option<Vec<_>>>()
+            {
+                Some(keys) => {
+                    self.keys = keys.into_iter().zip(0..).collect();
+                    self.hashed = true;
+                }
+                // One value without a key means the map could never answer
+                // correctly; stop trying.
+                None => self.unkeyable = true,
+            }
+        }
+        if self.hashed {
+            if let Some(key) = value.dedup_key() {
+                let next = self.values.len();
+                let values = &mut self.values;
+                return *self.keys.entry(key).or_insert_with(|| {
+                    values.push(value);
+                    next
+                });
+            }
+            // Mixed keyable and not: fall back for good, which stays correct
+            // because both paths search the same list.
+            self.hashed = false;
+            self.unkeyable = true;
+        }
+        match self.values.iter().position(|v| *v == value) {
             Some(index) => index,
             None => {
-                values.push(value);
-                values.len() - 1
+                self.values.push(value);
+                self.values.len() - 1
             }
-        });
+        }
     }
+}
+
+/// Attach one freshly computed value to each exit of `entry_point`, collapsing
+/// the exits that ended up equal.
+///
+/// This is [`GcflobddT::map`] with `PartialEq` in place of `Eq`, which is what
+/// lets `f64` and `rug::Complex` through.
+fn collapse<'grammar, T: MatMulValue>(
+    entry_point: &Rch<GcflobddNode<'grammar>>,
+    exit_values: impl Iterator<Item = T>,
+    grammar: &'grammar Grammar,
+    context: &RefCell<Context<'grammar>>,
+) -> GcflobddT<'grammar, T> {
+    let mut interner = ValueSet::default();
+    let reduce_map: Vec<usize> = exit_values.map(|value| interner.intern(value)).collect();
+    let values = interner.values;
 
     let num_exits = values.len();
     GcflobddT {
         connection: ConnectionT {
-            entry_point: GcflobddNode::reduce(
-                &product.entry_point,
-                reduce_map.into(),
-                num_exits,
-                context,
-            ),
+            entry_point: GcflobddNode::reduce(entry_point, reduce_map.into(), num_exits, context),
             return_map: values,
         },
         grammar,
@@ -519,6 +631,39 @@ impl<'grammar, T: MatMulValue> GcflobddT<'grammar, T> {
             self.grammar,
             context,
         )
+    }
+
+    /// The entrywise sum `self + rhs`, over the grammar both share.
+    ///
+    /// Needed to build anything that is not a product operator -- a controlled
+    /// gate is `|0><0| (x) I + |1><1| (x) U`, two Kronecker towers added.
+    /// [`mk_op_pair_map`](Self::mk_op_pair_map) does the same job but demands
+    /// `Copy + Eq`, which rules out `f64` and `rug::Complex`; the name differs
+    /// from `GcflobddInt`'s cached `mk_add` for the same reason.
+    pub fn mk_matadd(&self, rhs: &Self, context: &RefCell<Context<'grammar>>) -> Self {
+        assert!(
+            Rc::ptr_eq(&self.grammar.root, &rhs.grammar.root),
+            "addition operands must share a grammar"
+        );
+        let ConnectionPair {
+            entry_point,
+            return_map,
+        } = GcflobddNode::pair_product(
+            &self.connection.entry_point,
+            &rhs.connection.entry_point,
+            context,
+        );
+        let values = return_map
+            .iter()
+            .map(|(i, j)| self.connection.return_map[*i].add(&rhs.connection.return_map[*j]));
+        collapse(&entry_point, values, self.grammar, context)
+    }
+
+    /// `scalar * self`, which touches only the value map unless the scaling
+    /// makes two exits coincide.
+    pub fn mk_scale(&self, scalar: &T, context: &RefCell<Context<'grammar>>) -> Self {
+        let values = self.connection.return_map.iter().map(|v| v.mul(scalar));
+        collapse(&self.connection.entry_point, values, self.grammar, context)
     }
 
     /// The Kronecker product `self (x) rhs`, over `grammar` -- which must be

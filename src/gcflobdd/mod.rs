@@ -225,6 +225,24 @@ impl<'grammar> GcflobddInt<'grammar> {
     define_int_op!(mk_mul, Mul, a, b, a * b);
 }
 
+impl<'grammar, T> GcflobddT<'grammar, T> {
+    /// The size of *this diagram*: distinct nodes reachable from its root, and
+    /// the connections leaving them.
+    ///
+    /// Not the same thing as [`Context::node_count`], which counts everything
+    /// interned so far, intermediates included.
+    pub fn count_nodes_and_edges(&self) -> (usize, usize) {
+        let (mut nodes, mut edges) = (0, 0);
+        GcflobddNode::count_nodes_and_edges(
+            &self.connection.entry_point,
+            &mut HashMap::default(),
+            &mut nodes,
+            &mut edges,
+        );
+        (nodes, edges)
+    }
+}
+
 impl<'grammar, T: Eq> GcflobddT<'grammar, T> {
     pub fn find_one_path_to(&self, value: &T) -> Option<Vec<Option<bool>>> {
         let index = inverse_lookup(&self.connection.return_map, value)?;

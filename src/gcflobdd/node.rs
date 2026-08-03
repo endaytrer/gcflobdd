@@ -369,6 +369,31 @@ impl<'grammar> GcflobddNode<'grammar> {
         }
     }
 
+    /// Count the distinct nodes reachable from `node`, and the connections
+    /// leaving them.
+    ///
+    /// This measures one diagram, not the context's interning tables, so it is
+    /// the figure to compare against another implementation's node/edge counts.
+    pub(super) fn count_nodes_and_edges(
+        node: &Rch<Self>,
+        seen: &mut HashMap<usize, ()>,
+        nodes: &mut usize,
+        edges: &mut usize,
+    ) {
+        if seen.insert(Rc::as_ptr(node) as usize, ()).is_some() {
+            return;
+        }
+        *nodes += 1;
+        if let GcflobddNodeType::Internal(internal) = &node.node {
+            for layer in &internal.connections {
+                *edges += layer.len();
+                for connection in layer {
+                    Self::count_nodes_and_edges(&connection.entry_point, seen, nodes, edges);
+                }
+            }
+        }
+    }
+
     pub fn find_one_path_to(&self, value: usize) -> Vec<Option<bool>> {
         if self.num_exits == 1 {
             debug_assert_eq!(value, 0);

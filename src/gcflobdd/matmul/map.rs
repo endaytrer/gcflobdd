@@ -14,13 +14,18 @@ use std::cmp::Ordering;
 /// its cache) depends only on structure, and the same code serves every value
 /// type.
 ///
+/// Coefficients are `i128`: they count how many products coincide, which for a
+/// Hadamard-style operator is exponential in the qubit count (the reference C++
+/// implementation reaches for arbitrary-precision integers here). Overflow
+/// panics rather than wrapping.
+///
 /// Entries are kept sorted by `(i, j)` and any key whose coefficient reaches
 /// zero is dropped, so `PartialEq`/`Hash` are canonical and the empty map is
 /// the *only* spelling of zero. (The C++ implementation instead writes zero as
 /// a `(-1, -1)` sentinel that coexists with genuine zero coefficients, which is
 /// exactly the conflation the algorithm notes warn about.)
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
-pub(crate) struct MatMulMap(Vec<(usize, usize, i64)>);
+pub(crate) struct MatMulMap(Vec<(usize, usize, i128)>);
 
 impl MatMulMap {
     /// The additive identity: an empty combination.
@@ -41,7 +46,7 @@ impl MatMulMap {
     }
 
     #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = (usize, usize, i64)> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = (usize, usize, i128)> + '_ {
         self.0.iter().copied()
     }
 
@@ -78,7 +83,7 @@ impl MatMulMap {
     }
 
     /// Scale every coefficient by `coeff`.
-    pub fn scale(&self, coeff: i64) -> Self {
+    pub fn scale(&self, coeff: i128) -> Self {
         if coeff == 0 {
             return Self::zero();
         }
@@ -113,8 +118,8 @@ impl MatMulMap {
     }
 
     /// Sum adjacent entries that share a key, dropping the ones that cancel.
-    fn compacted(sorted: Vec<(usize, usize, i64)>) -> Self {
-        let mut out: Vec<(usize, usize, i64)> = Vec::with_capacity(sorted.len());
+    fn compacted(sorted: Vec<(usize, usize, i128)>) -> Self {
+        let mut out: Vec<(usize, usize, i128)> = Vec::with_capacity(sorted.len());
         for (i, j, c) in sorted {
             match out.last_mut() {
                 Some(last) if last.0 == i && last.1 == j => {
