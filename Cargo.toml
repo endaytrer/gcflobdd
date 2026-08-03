@@ -30,3 +30,7 @@ harness = false
 [[test]]
 name = "matmul"
 harness = false
+
+[[test]]
+name = "quantum"
+harness = false
