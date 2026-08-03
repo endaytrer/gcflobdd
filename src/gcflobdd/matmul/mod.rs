@@ -34,6 +34,24 @@
 //! Real numbers only appear in [`GcflobddT::mk_matmul`], which substitutes them
 //! into the finished symbolic diagram in one pass. So the node recursion and
 //! its cache are keyed on structure alone and are shared by every value type.
+//!
+//! # Vectors
+//!
+//! A vector of length `2^m` is a diagram over `m` variables, index big-endian,
+//! so it lives over the matrix grammar's [halved](Grammar::halved) counterpart
+//! -- the same tree with every `S -> a a` leaf collapsed to one terminal.
+//!
+//! [`GcflobddT::mk_matvec`] is its own recursion rather than a matrix product
+//! against a padded operand, so the vector keeps half as many variables all the
+//! way down. Dropping the column coordinate from the recurrence above leaves
+//!
+//! ```text
+//!     yblock(Rhi) = sum over Chi of  B1[ A1(Rhi, Chi) ] * Bv[ Av(Chi) ]
+//! ```
+//!
+//! which is again a matrix-vector product -- of the grid `A1` by the vector
+//! `Av` -- so the same deferred semiring applies, and one recursive call still
+//! produces the plan for every `Rhi` at once.
 
 mod map;
 pub(in crate::gcflobdd) mod node;
@@ -46,10 +64,11 @@ use std::rc::Rc;
 use crate::gcflobdd::GcflobddT;
 use crate::gcflobdd::connection::{Connection, ConnectionT};
 use crate::gcflobdd::context::Context;
-use crate::gcflobdd::matmul::node::{matmul_node, split};
+use crate::gcflobdd::matmul::node::{Valued, matmul_node, matvec_node, split};
 use crate::gcflobdd::node::{GcflobddNode, GcflobddNodeType, InternalNode};
 use crate::grammar::{Grammar, GrammarNode, GrammarNodeType};
 use crate::utils::hash_cache::Rch;
+use crate::utils::{HashSet, new_hash_set};
 
 /// The values a matrix built out of [`GcflobddT`] can hold.
 ///
@@ -128,10 +147,10 @@ impl MatMulValue for rug::Complex {
     }
 }
 
-/// Check that `grammar` describes a square matrix in interleaved order: binary
-/// groupings all the way down, an even number of variables under each, and
-/// `S -> a a` at the leaves.
-fn check_matrix_grammar(grammar: &Rc<GrammarNode>) {
+/// The two groupings of a matrix rule, checked. Panics unless the rule is
+/// binary; reports whether its two symbols are terminals (`S -> a a`, the 2x2
+/// base case).
+fn matrix_rule(grammar: &Rc<GrammarNode>) -> (&Rc<GrammarNode>, &Rc<GrammarNode>, bool) {
     match &grammar.node {
         GrammarNodeType::Internal(children) => {
             let [g1, g2] = &children[..] else {
@@ -142,27 +161,86 @@ fn check_matrix_grammar(grammar: &Rc<GrammarNode>) {
             };
             let terminals = matches!(g1.node, GrammarNodeType::Terminal) as usize
                 + matches!(g2.node, GrammarNodeType::Terminal) as usize;
-            if terminals == 2 {
-                // `S -> a a`: the 2x2 base case.
-                return;
-            }
-            assert_eq!(
-                terminals, 0,
+            assert!(
+                terminals == 0 || terminals == 2,
                 "matmul requires a grouping to hold either two terminals or two non-terminals"
             );
-            assert!(
-                g1.num_vars % 2 == 0 && g2.num_vars % 2 == 0,
-                "matmul requires each grouping to cover an even number of variables, \
-                 found {} and {}",
-                g1.num_vars,
-                g2.num_vars
-            );
-            check_matrix_grammar(g1);
-            check_matrix_grammar(g2);
+            (g1, g2, terminals == 2)
         }
         GrammarNodeType::Terminal => panic!("matmul requires at least two variables"),
         GrammarNodeType::Bdd(_) => panic!("matmul does not support BDD groupings"),
     }
+}
+
+/// Check that `grammar` describes a square matrix in interleaved order: binary
+/// groupings all the way down, an even number of variables under each, and
+/// `S -> a a` at the leaves.
+///
+/// Grammars are DAGs -- a balanced one names the same symbol twice -- so
+/// visited nodes are recorded; walking them as trees would cost `2^depth`.
+fn check_matrix_grammar(grammar: &Rc<GrammarNode>) {
+    fn walk(grammar: &Rc<GrammarNode>, seen: &mut HashSet<usize>) {
+        if !seen.insert(Rc::as_ptr(grammar) as usize) {
+            return;
+        }
+        let (g1, g2, leaves) = matrix_rule(grammar);
+        if leaves {
+            return;
+        }
+        assert!(
+            g1.num_vars % 2 == 0 && g2.num_vars % 2 == 0,
+            "matmul requires each grouping to cover an even number of variables, \
+             found {} and {}",
+            g1.num_vars,
+            g2.num_vars
+        );
+        walk(g1, seen);
+        walk(g2, seen);
+    }
+    walk(grammar, &mut new_hash_set());
+}
+
+/// Check that `vector` is the [halved](Grammar::halved) counterpart of the
+/// matrix grammar `matrix`: the same tree, with each `S -> a a` leaf collapsed
+/// to one terminal, so it addresses exactly the row half of the variables.
+fn check_matvec_grammars(matrix: &Rc<GrammarNode>, vector: &Rc<GrammarNode>) {
+    fn walk(
+        matrix: &Rc<GrammarNode>,
+        vector: &Rc<GrammarNode>,
+        seen: &mut HashSet<(usize, usize)>,
+    ) {
+        if !seen.insert((Rc::as_ptr(matrix) as usize, Rc::as_ptr(vector) as usize)) {
+            return;
+        }
+        let (g1, g2, leaves) = matrix_rule(matrix);
+        if leaves {
+            assert!(
+                matches!(vector.node, GrammarNodeType::Terminal),
+                "matvec: a `S -> a a` matrix grouping must face a single terminal, \
+                 found one covering {} variables",
+                vector.num_vars
+            );
+            return;
+        }
+        let GrammarNodeType::Internal(children) = &vector.node else {
+            panic!("matvec: the vector grammar must mirror the matrix grammar's groupings")
+        };
+        let [h1, h2] = &children[..] else {
+            panic!("matvec: the vector grammar must mirror the matrix grammar's groupings")
+        };
+        assert!(
+            g1.num_vars == 2 * h1.num_vars && g2.num_vars == 2 * h2.num_vars,
+            "matvec: each vector grouping must cover half its matrix grouping, \
+             found {}/{} against {}/{}",
+            h1.num_vars,
+            h2.num_vars,
+            g1.num_vars,
+            g2.num_vars
+        );
+        walk(g1, h1, seen);
+        walk(g2, h2, seen);
+    }
+    walk(matrix, vector, &mut new_hash_set());
 }
 
 /// The node of the identity matrix over `grammar`: exit 0 is the diagonal, exit
@@ -258,6 +336,57 @@ impl<'grammar, T: Clone + PartialEq> GcflobddT<'grammar, T> {
         }
     }
 
+    /// Build the vector whose component `i` is `entries[i]`.
+    ///
+    /// `grammar` is a vector grammar -- typically
+    /// [`matrix_grammar.halved()`](Grammar::halved) -- so it covers `log2` of
+    /// the length in variables, index big-endian. Cost is `O(N)`.
+    pub fn from_vector(
+        entries: &[T],
+        grammar: &'grammar Grammar,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Self {
+        assert_eq!(
+            entries.len(),
+            1usize << grammar.num_vars(),
+            "expected a vector of length {}",
+            1usize << grammar.num_vars()
+        );
+        // A vector's table is its components: variable 0 is the leading index
+        // bit, which is exactly `from_table`'s convention.
+        Self::from_table(entries, grammar, context)
+    }
+
+    /// The basis vector `e_index`: `one` at `index`, `zero` everywhere else.
+    ///
+    /// Built directly, so its size is logarithmic in the length.
+    pub fn mk_basis_vector(
+        index: usize,
+        one: T,
+        zero: T,
+        grammar: &'grammar Grammar,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Self {
+        assert!(one != zero, "a basis vector needs two distinct values");
+        let bits = grammar.num_vars();
+        assert!(
+            bits >= usize::BITS as usize || index < (1usize << bits),
+            "index {index} is outside the vector"
+        );
+        let (entry_point, match_exit) = basis_node(&grammar.root, index, context);
+        Self {
+            connection: ConnectionT {
+                entry_point,
+                return_map: if match_exit == 0 {
+                    vec![one, zero]
+                } else {
+                    vec![zero, one]
+                },
+            },
+            grammar,
+        }
+    }
+
     /// `log2` of the dimension of the matrix this grammar describes.
     fn dimension_bits(grammar: &Grammar) -> usize {
         assert_eq!(
@@ -276,11 +405,6 @@ impl<'grammar, T: Clone> GcflobddT<'grammar, T> {
         debug_assert!(
             bits >= usize::BITS as usize || (row < (1usize << bits) && col < (1usize << bits))
         );
-        // A dimension can exceed what `usize` indexes, so bits above the width
-        // of the index are simply zero.
-        let bit = |value: usize, position: usize| {
-            position < usize::BITS as usize && (value >> position) & 1 == 1
-        };
         let mut assignment = Vec::with_capacity(2 * bits);
         for k in 0..bits {
             assignment.push(bit(row, bits - 1 - k));
@@ -288,9 +412,70 @@ impl<'grammar, T: Clone> GcflobddT<'grammar, T> {
         }
         self.evaluate(&assignment)
     }
+
+    /// The component at `index`, for a diagram over a vector grammar.
+    pub fn component(&self, index: usize) -> T {
+        let bits = self.grammar.num_vars();
+        debug_assert!(bits >= usize::BITS as usize || index < (1usize << bits));
+        let assignment = (0..bits)
+            .map(|k| bit(index, bits - 1 - k))
+            .collect::<Vec<_>>();
+        self.evaluate(&assignment)
+    }
+}
+
+/// Substitute real values into a finished symbolic diagram: each exit's
+/// combination becomes `sum coeff * lhs[i] * rhs[j]`, exits that end up equal
+/// collapse, and the result is a diagram over `grammar`.
+///
+/// This is the only place a product touches a number, and it runs once per
+/// call for both [`GcflobddT::mk_matmul`] and [`GcflobddT::mk_matvec`].
+fn substitute<'grammar, T: MatMulValue>(
+    product: Valued<'grammar>,
+    lhs: &[T],
+    rhs: &[T],
+    grammar: &'grammar Grammar,
+    context: &RefCell<Context<'grammar>>,
+) -> GcflobddT<'grammar, T> {
+    let mut values: Vec<T> = Vec::with_capacity(product.return_map.len());
+    let mut reduce_map = Vec::with_capacity(product.return_map.len());
+    for combination in product.return_map.iter() {
+        let mut value = T::zero_like(&lhs[0]);
+        for (i, j, coeff) in combination.iter() {
+            value = value.add(&lhs[i].mul(&rhs[j]).scale(coeff));
+        }
+        reduce_map.push(match values.iter().position(|v| *v == value) {
+            Some(index) => index,
+            None => {
+                values.push(value);
+                values.len() - 1
+            }
+        });
+    }
+
+    let num_exits = values.len();
+    GcflobddT {
+        connection: ConnectionT {
+            entry_point: GcflobddNode::reduce(
+                &product.entry_point,
+                reduce_map.into(),
+                num_exits,
+                context,
+            ),
+            return_map: values,
+        },
+        grammar,
+    }
 }
 
 impl<'grammar, T: MatMulValue> GcflobddT<'grammar, T> {
+    /// Which exit is known to hold zero, if any. It only ever prunes work: an
+    /// operand whose whole subtree is that exit contributes nothing and is
+    /// never descended into.
+    fn zero_exit(&self, zero: &T) -> Option<usize> {
+        self.connection.return_map.iter().position(|v| v == zero)
+    }
+
     /// The matrix product `self * rhs`.
     ///
     /// Both operands must be over the same grammar, which must describe a
@@ -302,56 +487,138 @@ impl<'grammar, T: MatMulValue> GcflobddT<'grammar, T> {
         );
         check_matrix_grammar(&self.grammar.root);
 
-        // Which exit of each operand is known to be zero, if any. It only ever
-        // prunes work: an operand whose whole subtree is that exit contributes
-        // nothing and is never descended into.
         let zero = T::zero_like(&self.connection.return_map[0]);
-        let z1 = self.connection.return_map.iter().position(|v| *v == zero);
-        let z2 = rhs.connection.return_map.iter().position(|v| *v == zero);
-
         let product = matmul_node(
             &self.connection.entry_point,
             &rhs.connection.entry_point,
-            z1,
-            z2,
+            self.zero_exit(&zero),
+            rhs.zero_exit(&zero),
             context,
         );
+        substitute(
+            product,
+            &self.connection.return_map,
+            &rhs.connection.return_map,
+            self.grammar,
+            context,
+        )
+    }
 
-        // Substitute the real values, once, into the symbolic result.
-        let mut values: Vec<T> = Vec::with_capacity(product.return_map.len());
-        let mut reduce_map = Vec::with_capacity(product.return_map.len());
-        for combination in product.return_map.iter() {
-            let mut value = T::zero_like(&self.connection.return_map[0]);
-            for (i, j, coeff) in combination.iter() {
-                value = value.add(
-                    &self.connection.return_map[i]
-                        .mul(&rhs.connection.return_map[j])
-                        .scale(coeff),
-                );
-            }
-            reduce_map.push(match values.iter().position(|v| *v == value) {
-                Some(index) => index,
-                None => {
-                    values.push(value);
-                    values.len() - 1
-                }
-            });
+    /// The matrix-vector product `self * vector`.
+    ///
+    /// `vector` must be over the [halved](Grammar::halved) counterpart of this
+    /// matrix's grammar, and the result is a vector over that same grammar.
+    /// This is a recursion of its own rather than a matrix product with a
+    /// padded operand: the vector keeps half as many variables throughout.
+    pub fn mk_matvec(&self, vector: &Self, context: &RefCell<Context<'grammar>>) -> Self {
+        check_matvec_grammars(&self.grammar.root, &vector.grammar.root);
+
+        let zero = T::zero_like(&self.connection.return_map[0]);
+        let product = matvec_node(
+            &self.connection.entry_point,
+            &vector.connection.entry_point,
+            self.zero_exit(&zero),
+            vector.zero_exit(&zero),
+            context,
+        );
+        substitute(
+            product,
+            &self.connection.return_map,
+            &vector.connection.return_map,
+            vector.grammar,
+            context,
+        )
+    }
+}
+
+/// Bit `position` of `value`, counted from the least significant.
+///
+/// A dimension can exceed what a `usize` indexes, so positions past its width
+/// read as zero rather than overflowing the shift.
+#[inline]
+fn bit(value: usize, position: usize) -> bool {
+    position < usize::BITS as usize && (value >> position) & 1 == 1
+}
+
+/// The leading and trailing parts of an index whose last `low_bits` bits belong
+/// to the second grouping.
+#[inline]
+fn split_index(index: usize, low_bits: usize) -> (usize, usize) {
+    if low_bits >= usize::BITS as usize {
+        (0, index)
+    } else {
+        (index >> low_bits, index & ((1usize << low_bits) - 1))
+    }
+}
+
+/// The node of the basis vector `e_index` over `grammar`, and the exit that
+/// `index` itself reaches; the other exit is every other index.
+///
+/// Which of the two is the match is forced by canonical numbering rather than
+/// chosen: exit 0 is whatever the *first* assignment reaches, so it is the
+/// match only when the leading index bit is 0.
+fn basis_node<'grammar>(
+    grammar: &'grammar Rc<GrammarNode>,
+    index: usize,
+    context: &RefCell<Context<'grammar>>,
+) -> (Rch<GcflobddNode<'grammar>>, usize) {
+    let children = match &grammar.node {
+        GrammarNodeType::Terminal => {
+            // One variable: a fork, whose exits are the two index values.
+            return (GcflobddNode::mk_distinction(0, grammar, context), index & 1);
         }
+        GrammarNodeType::Internal(children) if children.len() == 2 => children,
+        _ => panic!("a basis vector needs a binary vector grammar"),
+    };
+    let (h1, h2) = (&children[0], &children[1]);
+    let (high, low) = split_index(index, h2.num_vars);
+    let (a_node, a_match) = basis_node(h1, high, context);
+    let (b_node, b_match) = basis_node(h2, low, context);
 
-        let num_exits = values.len();
-        Self {
-            connection: ConnectionT {
-                entry_point: GcflobddNode::reduce(
-                    &product.entry_point,
-                    reduce_map.into(),
-                    num_exits,
+    let (b_connections, match_exit) = if a_match == 0 {
+        // The matching half is reached first, so the low node's exits are
+        // registered first and its numbering carries over unchanged.
+        (
+            vec![
+                Connection::new(b_node, vec![0, 1], context),
+                Connection::new(
+                    GcflobddNode::mk_no_distinction(h2, context),
+                    vec![1 - b_match],
                     context,
                 ),
-                return_map: values,
-            },
-            grammar: self.grammar,
-        }
-    }
+            ],
+            b_match,
+        )
+    } else {
+        // Everything under the first exit mismatches, so exit 0 is the
+        // mismatch and the match becomes exit 1.
+        (
+            vec![
+                Connection::new(
+                    GcflobddNode::mk_no_distinction(h2, context),
+                    vec![0],
+                    context,
+                ),
+                Connection::new(
+                    b_node,
+                    if b_match == 0 { vec![1, 0] } else { vec![0, 1] },
+                    context,
+                ),
+            ],
+            1,
+        )
+    };
+    // Built before the node is interned: `add_gcflobdd_node` holds the context
+    // borrow, and `Connection::new` needs it too.
+    let a_connection = Connection::new(a_node, vec![0, 1], context);
+    let node = context.borrow_mut().add_gcflobdd_node(GcflobddNode {
+        num_exits: 2,
+        grammar,
+        node: GcflobddNodeType::Internal(InternalNode {
+            connections: vec![vec![a_connection], b_connections],
+        }),
+    });
+    (node, match_exit)
 }
 
 /// Split an interleaved table index back into its row and column.

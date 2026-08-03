@@ -182,6 +182,109 @@ fn add_valued<'grammar>(
     normalize(&entry_point, values, context)
 }
 
+/// Carry out one plan: multiply the block pairs it names, weight them, and add
+/// them up.
+///
+/// `multiply(i, j)` performs the recursive call for the `i`th left block and
+/// the `j`th right one; the caller supplies it because that is the only part
+/// that differs between a matrix and a vector right-hand side.
+fn realize_block<'grammar>(
+    plan: &MatMulMap,
+    grammar: &'grammar Rc<GrammarNode>,
+    lhs: &[Connection<'grammar>],
+    rhs: &[Connection<'grammar>],
+    mut multiply: impl FnMut(usize, usize) -> Valued<'grammar>,
+    context: &RefCell<Context<'grammar>>,
+) -> Valued<'grammar> {
+    if plan.is_zero() {
+        return zero_valued(grammar, context);
+    }
+    let mut acc: Option<Valued<'grammar>> = None;
+    for (i, j, coeff) in plan.iter() {
+        let sub = multiply(i, j);
+        // Lift the sub-result out of the children's exit spaces and into this
+        // node's operands', then weight it.
+        let lifted = sub
+            .return_map
+            .iter()
+            .map(|m| m.lift(&lhs[i].return_map, &rhs[j].return_map).scale(coeff))
+            .collect();
+        let term = normalize(&sub.entry_point, lifted, context);
+        // Adding an all-zero block changes nothing; skipping keeps sparse
+        // operands cheap.
+        if term.return_map.len() == 1 && term.return_map[0].is_zero() {
+            continue;
+        }
+        acc = Some(match acc {
+            None => term,
+            Some(previous) => add_valued(&previous, &term, context),
+        });
+    }
+    acc.unwrap_or_else(|| zero_valued(grammar, context))
+}
+
+/// Build a node over `grammar` from `aa` -- a diagram whose exits are classes
+/// of cells -- and the block realized for each of those classes.
+///
+/// Folds every block's values into one exit list in first-appearance order,
+/// keeps the B-connections distinct, and reduces the A-node to match when
+/// deduping collapsed classes.
+fn assemble<'grammar>(
+    grammar: &'grammar Rc<GrammarNode>,
+    aa_entry_point: &Rch<GcflobddNode<'grammar>>,
+    blocks: Vec<Valued<'grammar>>,
+    context: &RefCell<Context<'grammar>>,
+) -> Valued<'grammar> {
+    let mut values: Vec<MatMulMap> = Vec::new();
+    let mut seen_value = new_hash_map();
+    let mut b_connections: Vec<Connection<'grammar>> = Vec::new();
+    let mut seen_connection = new_hash_map();
+    let mut reduce_map = Vec::with_capacity(blocks.len());
+
+    for block in blocks {
+        let mut return_map = Vec::with_capacity(block.return_map.len());
+        for value in block.return_map.iter() {
+            let next = values.len();
+            return_map.push(*seen_value.entry(value.clone()).or_insert_with(|| {
+                values.push(value.clone());
+                next
+            }));
+        }
+        // Entry points and return maps are both interned, so pointer equality
+        // is structural equality.
+        let connection = Connection::new(block.entry_point, return_map, context);
+        let key = (
+            Rc::as_ptr(&connection.entry_point) as usize,
+            Rc::as_ptr(&connection.return_map) as usize,
+        );
+        let next = b_connections.len();
+        reduce_map.push(*seen_connection.entry(key).or_insert_with(|| {
+            b_connections.push(connection);
+            next
+        }));
+    }
+
+    if values.len() == 1 {
+        return valued(GcflobddNode::mk_no_distinction(grammar, context), values);
+    }
+    // `reduce` returns the node unchanged for an identity map, and the
+    // `DontCare` node for a single class.
+    let num_blocks = b_connections.len();
+    let a_connection = Connection::new(
+        GcflobddNode::reduce(aa_entry_point, reduce_map.into(), num_blocks, context),
+        (0..num_blocks).collect(),
+        context,
+    );
+    let node = context.borrow_mut().add_gcflobdd_node(GcflobddNode {
+        num_exits: values.len(),
+        grammar,
+        node: GcflobddNodeType::Internal(InternalNode {
+            connections: vec![vec![a_connection], b_connections],
+        }),
+    });
+    valued(node, values)
+}
+
 /// Multiply the matrices denoted by `n1` and `n2`, symbolically.
 ///
 /// `z1` / `z2` are the exit indices of the two operands that are known to carry
@@ -301,98 +404,158 @@ pub(super) fn matmul_node<'grammar>(
         // and its exits are the equivalence classes of cells sharing a plan.
         let aa = matmul_node(&a1.entry_point, &a2.entry_point, a_zero1, a_zero2, context);
 
-        let mut values: Vec<MatMulMap> = Vec::new();
-        let mut seen_value = new_hash_map();
-        let mut b_connections: Vec<Connection<'grammar>> = Vec::new();
-        let mut seen_connection = new_hash_map();
-        let mut reduce_map = Vec::with_capacity(aa.return_map.len());
+        // 3b. Realize one block per distinct grid-cell class. The plans' keys
+        // live in the A-targets' exit space, so lift them into the
+        // B-connection indices they select.
+        let blocks = aa
+            .return_map
+            .iter()
+            .map(|cell| {
+                let plan = cell.lift(&a1.return_map, &a2.return_map);
+                realize_block(
+                    &plan,
+                    g2,
+                    &b1s,
+                    &b2s,
+                    |i, j| {
+                        matmul_node(
+                            &b1s[i].entry_point,
+                            &b2s[j].entry_point,
+                            b_zeros1[i],
+                            b_zeros2[j],
+                            context,
+                        )
+                    },
+                    context,
+                )
+            })
+            .collect();
 
-        // 3b. Realize one block per distinct grid-cell class.
-        for cell in aa.return_map.iter() {
-            // The plan's keys live in the A-targets' exit space; lift them into
-            // the B-connection indices they select.
-            let plan = cell.lift(&a1.return_map, &a2.return_map);
-            let block = if plan.is_zero() {
-                zero_valued(g2, context)
-            } else {
-                let mut acc: Option<Valued<'grammar>> = None;
-                for (i, j, coeff) in plan.iter() {
-                    let sub = matmul_node(
-                        &b1s[i].entry_point,
-                        &b2s[j].entry_point,
-                        b_zeros1[i],
-                        b_zeros2[j],
-                        context,
-                    );
-                    // Lift the sub-result out of the children's exit spaces and
-                    // into this node's operands', then weight it.
-                    let lifted = sub
-                        .return_map
-                        .iter()
-                        .map(|m| m.lift(&b1s[i].return_map, &b2s[j].return_map).scale(coeff))
-                        .collect();
-                    let term = normalize(&sub.entry_point, lifted, context);
-                    // Adding an all-zero block changes nothing; skipping keeps
-                    // sparse operands cheap.
-                    if term.return_map.len() == 1 && term.return_map[0].is_zero() {
-                        continue;
-                    }
-                    acc = Some(match acc {
-                        None => term,
-                        Some(previous) => add_valued(&previous, &term, context),
-                    });
-                }
-                acc.unwrap_or_else(|| zero_valued(g2, context))
-            };
-
-            // Fold the block's values into this node's exit list...
-            let mut return_map = Vec::with_capacity(block.return_map.len());
-            for value in block.return_map.iter() {
-                let next = values.len();
-                return_map.push(*seen_value.entry(value.clone()).or_insert_with(|| {
-                    values.push(value.clone());
-                    next
-                }));
-            }
-            // ... and keep the B-connections distinct. Entry points and return
-            // maps are both interned, so pointer equality is structural.
-            let connection = Connection::new(block.entry_point, return_map, context);
-            let key = (
-                Rc::as_ptr(&connection.entry_point) as usize,
-                Rc::as_ptr(&connection.return_map) as usize,
-            );
-            let next = b_connections.len();
-            reduce_map.push(*seen_connection.entry(key).or_insert_with(|| {
-                b_connections.push(connection);
-                next
-            }));
-        }
-
-        if values.len() == 1 {
-            valued(GcflobddNode::mk_no_distinction(grammar, context), values)
-        } else {
-            // Deduping B-connections collapses grid-cell classes, so the A-node
-            // is reduced to match. `reduce` returns the node unchanged for an
-            // identity map, and the `DontCare` node for a single class.
-            let num_blocks = b_connections.len();
-            let a_connection = Connection::new(
-                GcflobddNode::reduce(&aa.entry_point, reduce_map.into(), num_blocks, context),
-                (0..num_blocks).collect(),
-                context,
-            );
-            let node = context.borrow_mut().add_gcflobdd_node(GcflobddNode {
-                num_exits: values.len(),
-                grammar,
-                node: GcflobddNodeType::Internal(InternalNode {
-                    connections: vec![vec![a_connection], b_connections],
-                }),
-            });
-            valued(node, values)
-        }
+        assemble(grammar, &aa.entry_point, blocks, context)
     };
 
     context
         .borrow_mut()
         .set_matmul_cache(n1, n2, z1, z2, ans.clone());
+    ans
+}
+
+/// Multiply the matrix denoted by `m` by the vector denoted by `v`,
+/// symbolically.
+///
+/// `m` is over a matrix grammar and `v` over its
+/// [halved](crate::grammar::Grammar::halved) counterpart, so `v` carries half
+/// as many variables and the result is a *vector* diagram over `v`'s grammar.
+/// `zm` / `zv` are the exits known to carry zero, if any; they only prune work.
+///
+/// This is the matrix recurrence with the column coordinate dropped:
+///
+/// ```text
+///     yblock(Rhi) = sum over Chi of  B1[ A1(Rhi, Chi) ] * Bv[ Av(Chi) ]
+/// ```
+///
+/// which is itself a matrix-vector product -- of the grid `A1` by the vector
+/// `Av` -- so one recursive call still yields the plan for every `Rhi` at once,
+/// in the same deferred semiring. The result's exit values are
+/// [`MatMulMap`]s over pairs of `m`'s and `v`'s own exits.
+pub(super) fn matvec_node<'grammar>(
+    m: &Rch<GcflobddNode<'grammar>>,
+    v: &Rch<GcflobddNode<'grammar>>,
+    zm: Option<usize>,
+    zv: Option<usize>,
+    context: &RefCell<Context<'grammar>>,
+) -> Valued<'grammar> {
+    debug_assert_eq!(m.grammar.num_vars, 2 * v.grammar.num_vars);
+
+    // 0. Memoize on structure, never on values.
+    if let Some(cached) = context.borrow().get_matvec_cache(m, v, zm, zv) {
+        return cached;
+    }
+
+    let matrix_grammar = m.grammar;
+    let vector_grammar = v.grammar;
+
+    // 1. Provably-zero short circuit: one operand is all zeros.
+    let ans = if (m.num_exits == 1 && zm == Some(0)) || (v.num_exits == 1 && zv == Some(0)) {
+        zero_valued(vector_grammar, context)
+    } else if matches!(vector_grammar.node, GrammarNodeType::Terminal) {
+        // 2. Base case: a 2x2 matrix times a 2-element vector.
+        let a = read_2x2(m);
+        let b = [v.evaluate(&[false]), v.evaluate(&[true])];
+        let term = |i: usize, j: usize| {
+            if Some(a[i]) == zm || Some(b[j]) == zv {
+                MatMulMap::zero()
+            } else {
+                MatMulMap::single(a[i], b[j])
+            }
+        };
+        let p0 = term(0, 0).add(&term(1, 1)); // M00*v0 + M01*v1
+        let p1 = term(2, 0).add(&term(3, 1)); // M10*v0 + M11*v1
+
+        if p0 == p1 {
+            valued(
+                GcflobddNode::mk_no_distinction(vector_grammar, context),
+                vec![p0],
+            )
+        } else {
+            // A fork's exits are already in the canonical order: index 0, then 1.
+            valued(
+                GcflobddNode::mk_distinction(0, vector_grammar, context),
+                vec![p0, p1],
+            )
+        }
+    } else {
+        // 3. Recursive case. The matrix splits into a grid of blocks and the
+        // vector into a vector of sub-vectors, over corresponding groupings.
+        let (g1, g2) = split(matrix_grammar);
+        let (h1, h2) = split(vector_grammar);
+        let (am, bms) = decompose(m, g1, g2, context);
+        let (av, bvs) = decompose(v, h1, h2, context);
+        let (a_zero_m, b_zeros_m) = locate_zeros(&am, &bms, zm);
+        let (a_zero_v, b_zeros_v) = locate_zeros(&av, &bvs, zv);
+
+        // 3a. The grid times the sub-vector index: one recursive call, whose
+        // exits are the classes of Rhi that share a plan.
+        let aa = matvec_node(
+            &am.entry_point,
+            &av.entry_point,
+            a_zero_m,
+            a_zero_v,
+            context,
+        );
+
+        // 3b. Realize one sub-vector per class. Lifting moves the plans' keys
+        // from the A-targets' exit spaces into the B-connection indices they
+        // select -- matrix blocks on one side, vector blocks on the other.
+        let blocks = aa
+            .return_map
+            .iter()
+            .map(|cell| {
+                let plan = cell.lift(&am.return_map, &av.return_map);
+                realize_block(
+                    &plan,
+                    h2,
+                    &bms,
+                    &bvs,
+                    |i, j| {
+                        matvec_node(
+                            &bms[i].entry_point,
+                            &bvs[j].entry_point,
+                            b_zeros_m[i],
+                            b_zeros_v[j],
+                            context,
+                        )
+                    },
+                    context,
+                )
+            })
+            .collect();
+
+        assemble(vector_grammar, &aa.entry_point, blocks, context)
+    };
+
+    context
+        .borrow_mut()
+        .set_matvec_cache(m, v, zm, zv, ans.clone());
     ans
 }

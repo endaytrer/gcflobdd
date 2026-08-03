@@ -335,3 +335,310 @@ fn matmul_survives_gc() {
         "square after gc",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Matrix-vector multiplication.
+// ---------------------------------------------------------------------------
+
+fn dense_matvec<T: MatMulValue>(m: &[Vec<T>], v: &[T]) -> Vec<T> {
+    m.iter()
+        .map(|row| {
+            let mut acc = T::zero_like(&v[0]);
+            for (a, b) in row.iter().zip(v) {
+                acc = acc.add(&a.mul(b));
+            }
+            acc
+        })
+        .collect()
+}
+
+fn assert_components<T: MatMulValue + std::fmt::Debug>(
+    product: &GcflobddT<'_, T>,
+    expected: &[T],
+    what: &str,
+) {
+    for (i, value) in expected.iter().enumerate() {
+        assert_eq!(product.component(i), *value, "{what}: component {i}");
+    }
+}
+
+fn random_vector(n: usize, state: &mut u64, modulus: i64) -> Vec<i64> {
+    (0..n)
+        .map(|_| (prng(state) % (2 * modulus as u64 + 1)) as i64 - modulus)
+        .collect()
+}
+
+/// Every matrix grammar paired with the vector grammar its matrices act on.
+fn matvec_grammars() -> Vec<(Grammar, Grammar, usize)> {
+    matrix_grammars()
+        .into_iter()
+        .map(|(matrix, n)| {
+            let vector = matrix.halved();
+            assert_eq!(vector.num_vars() * 2, matrix.num_vars());
+            (matrix, vector, n)
+        })
+        .collect()
+}
+
+#[test]
+fn halved_grammar_preserves_sharing() {
+    // A balanced matrix grammar must halve to a balanced vector grammar: the
+    // two groupings of each rule stay the *same* node, or node tables lose all
+    // their sharing.
+    let matrix = balanced_grammar(4); // 16 variables -> 256x256
+    let vector = matrix.halved();
+    assert_eq!(vector.num_vars(), 8);
+
+    let context = RefCell::new(Context::default());
+    // 2^8 components, so a dense build is still cheap; it round-trips only if
+    // the halved tree really addresses 8 big-endian index bits.
+    let entries: Vec<i64> = (0..256).map(|i| (i as i64) % 5).collect();
+    let v = GcflobddT::from_vector(&entries, &vector, &context);
+    for (i, value) in entries.iter().enumerate() {
+        assert_eq!(v.component(i), *value);
+    }
+}
+
+#[test]
+fn matvec_matches_dense_oracle() {
+    let mut state = 0xc0ff_ee00_1234_5678u64;
+    for (matrix_grammar, vector_grammar, n) in matvec_grammars() {
+        let context = RefCell::new(Context::default());
+        for _ in 0..4 {
+            let m = random_matrix(n, &mut state, 4);
+            let v = random_vector(n, &mut state, 4);
+            let product = GcflobddT::from_matrix(&m, &matrix_grammar, &context).mk_matvec(
+                &GcflobddT::from_vector(&v, &vector_grammar, &context),
+                &context,
+            );
+            assert_components(&product, &dense_matvec(&m, &v), &format!("random {n}x{n}"));
+        }
+    }
+}
+
+#[test]
+fn matvec_handles_structured_operands() {
+    let mut state = 0x1357_9bdf_2468_ace0u64;
+    for (matrix_grammar, vector_grammar, n) in matvec_grammars() {
+        let context = RefCell::new(Context::default());
+        let random_m = random_matrix(n, &mut state, 5);
+        let random_v = random_vector(n, &mut state, 5);
+
+        let mut one_hot = vec![0i64; n];
+        one_hot[n / 2] = 3;
+        // A zero block in the matrix, so the short circuit fires below the top.
+        let mut half_zero = random_m.clone();
+        for row in half_zero.iter_mut().take(n / 2) {
+            for value in row.iter_mut().take(n / 2) {
+                *value = 0;
+            }
+        }
+
+        let matrices = [
+            ("zero", constant_matrix(n, 0)),
+            ("ones", constant_matrix(n, 1)),
+            ("identity", dense_identity(n)),
+            ("half zero", half_zero),
+            ("random", random_m),
+        ];
+        let vectors = [
+            ("zero", vec![0i64; n]),
+            ("ones", vec![1i64; n]),
+            ("one hot", one_hot),
+            ("random", random_v),
+        ];
+        for (m_name, m) in &matrices {
+            for (v_name, v) in &vectors {
+                let product = GcflobddT::from_matrix(m, &matrix_grammar, &context).mk_matvec(
+                    &GcflobddT::from_vector(v, &vector_grammar, &context),
+                    &context,
+                );
+                assert_components(
+                    &product,
+                    &dense_matvec(m, v),
+                    &format!("{m_name} * {v_name} ({n}x{n})"),
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn identity_leaves_vectors_alone() {
+    let mut state = 0x2222_3333_4444_5555u64;
+    for (matrix_grammar, vector_grammar, n) in matvec_grammars() {
+        let context = RefCell::new(Context::default());
+        let v = GcflobddT::from_vector(&random_vector(n, &mut state, 3), &vector_grammar, &context);
+        let identity = GcflobddT::mk_identity(1i64, 0i64, &matrix_grammar, &context);
+        // Diagram equality: I * v must reproduce v's canonical representation.
+        assert_eq!(identity.mk_matvec(&v, &context), v, "I * v at {n}");
+    }
+}
+
+#[test]
+fn matvec_agrees_with_matmul() {
+    // Broadcasting v across the columns of a matrix V makes M * V a matrix
+    // whose every column is M * v, which cross-checks the two recursions
+    // against each other rather than against the same dense oracle.
+    let mut state = 0x7777_1111_2222_3333u64;
+    for (matrix_grammar, vector_grammar, n) in matvec_grammars() {
+        let context = RefCell::new(Context::default());
+        let m = random_matrix(n, &mut state, 3);
+        let v = random_vector(n, &mut state, 3);
+        let broadcast: Vec<Vec<i64>> = v.iter().map(|value| vec![*value; n]).collect();
+
+        let dm = GcflobddT::from_matrix(&m, &matrix_grammar, &context);
+        let by_matmul = dm.mk_matmul(
+            &GcflobddT::from_matrix(&broadcast, &matrix_grammar, &context),
+            &context,
+        );
+        let by_matvec = dm.mk_matvec(
+            &GcflobddT::from_vector(&v, &vector_grammar, &context),
+            &context,
+        );
+
+        for i in 0..n {
+            let expected = by_matvec.component(i);
+            for j in 0..n {
+                assert_eq!(by_matmul.entry(i, j), expected, "row {i}, column {j}");
+            }
+        }
+    }
+}
+
+#[test]
+fn basis_vectors_select_columns() {
+    let mut state = 0x8888_9999_aaaa_bbbbu64;
+    for (matrix_grammar, vector_grammar, n) in matvec_grammars() {
+        let context = RefCell::new(Context::default());
+        let m = random_matrix(n, &mut state, 4);
+        let dm = GcflobddT::from_matrix(&m, &matrix_grammar, &context);
+
+        for k in 0..n {
+            let basis = GcflobddT::mk_basis_vector(k, 1i64, 0i64, &vector_grammar, &context);
+            // e_k itself...
+            for i in 0..n {
+                assert_eq!(
+                    basis.component(i),
+                    (i == k) as i64,
+                    "e_{k} component {i} (n={n})"
+                );
+            }
+            // ... and the same diagram as the tabulated version.
+            let mut dense = vec![0i64; n];
+            dense[k] = 1;
+            assert_eq!(
+                basis,
+                GcflobddT::from_vector(&dense, &vector_grammar, &context),
+                "e_{k} (n={n})"
+            );
+            // M * e_k is column k of M.
+            let column = dm.mk_matvec(&basis, &context);
+            for (i, row) in m.iter().enumerate() {
+                assert_eq!(column.component(i), row[k], "column {k}, row {i} (n={n})");
+            }
+        }
+    }
+}
+
+#[test]
+fn cancelling_matvec_is_exactly_zero() {
+    for (matrix_grammar, vector_grammar, n) in matvec_grammars() {
+        let context = RefCell::new(Context::default());
+        // Alternating +-1 against an all-ones matrix: every component cancels.
+        let m = constant_matrix(n, 1);
+        let v: Vec<i64> = (0..n).map(|i| if i % 2 == 0 { 1 } else { -1 }).collect();
+        let product = GcflobddT::from_matrix(&m, &matrix_grammar, &context).mk_matvec(
+            &GcflobddT::from_vector(&v, &vector_grammar, &context),
+            &context,
+        );
+
+        assert_components(&product, &dense_matvec(&m, &v), &format!("cancelling {n}"));
+        assert_eq!(
+            product,
+            GcflobddT::mk_constant(0i64, &vector_grammar, &context),
+            "a cancelling product must be the constant zero vector at {n}"
+        );
+    }
+}
+
+#[test]
+fn matvec_over_f64() {
+    let mut state = 0xdddd_eeee_ffff_0000u64;
+    for (matrix_grammar, vector_grammar, n) in matvec_grammars() {
+        let context = RefCell::new(Context::default());
+        // Small integers held as f64, so the comparison stays exact.
+        let m: Vec<Vec<f64>> = random_matrix(n, &mut state, 3)
+            .into_iter()
+            .map(|row| row.into_iter().map(|v| v as f64).collect())
+            .collect();
+        let v: Vec<f64> = random_vector(n, &mut state, 3)
+            .into_iter()
+            .map(|v| v as f64)
+            .collect();
+        let product = GcflobddT::from_matrix(&m, &matrix_grammar, &context).mk_matvec(
+            &GcflobddT::from_vector(&v, &vector_grammar, &context),
+            &context,
+        );
+        assert_components(&product, &dense_matvec(&m, &v), &format!("f64 {n}"));
+    }
+}
+
+#[test]
+fn matvec_scales_to_huge_matrices() {
+    // 2^16 variables: a 2^32768-square matrix against a 2^32768-long vector.
+    let matrix_grammar = balanced_grammar(16);
+    let vector_grammar = matrix_grammar.halved();
+    let context = RefCell::new(Context::default());
+
+    let identity = GcflobddT::mk_identity(1i64, 0i64, &matrix_grammar, &context);
+    let ones = GcflobddT::mk_constant(1i64, &vector_grammar, &context);
+    assert_eq!(identity.mk_matvec(&ones, &context), ones);
+
+    // (J - I) * e_0 is 1 everywhere except at component 0. Building J - I needs
+    // no dense work, and e_0 is logarithmic, so the whole check is structural.
+    let all_ones = GcflobddT::mk_constant(1i64, &matrix_grammar, &context);
+    let hollow = all_ones.mk_op_pair_map(&identity, |a, b| a - b, &context);
+    let basis = GcflobddT::mk_basis_vector(0, 1i64, 0i64, &vector_grammar, &context);
+    let product = hollow.mk_matvec(&basis, &context);
+    assert_eq!(product.component(0), 0);
+    assert_eq!(product.component(1), 1);
+    assert_eq!(product.component(12345), 1);
+    // ... and it is exactly the complement of e_0.
+    assert_eq!(
+        product,
+        GcflobddT::mk_basis_vector(0, 0i64, 1i64, &vector_grammar, &context)
+    );
+
+    assert!(
+        context.borrow().node_count() < 500,
+        "node count {} should stay logarithmic",
+        context.borrow().node_count()
+    );
+}
+
+#[test]
+fn matvec_survives_gc() {
+    let mut state = 0x4444_5555_6666_7777u64;
+    let matrix_grammar = balanced_grammar(3); // 8 variables -> 16x16
+    let vector_grammar = matrix_grammar.halved();
+    let context = RefCell::new(Context::default());
+    let m = random_matrix(16, &mut state, 3);
+    let v = random_vector(16, &mut state, 3);
+
+    let product = {
+        let dm = GcflobddT::from_matrix(&m, &matrix_grammar, &context);
+        let dv = GcflobddT::from_vector(&v, &vector_grammar, &context);
+        dm.mk_matvec(&dv, &context)
+    };
+    context.borrow_mut().gc();
+    assert_components(&product, &dense_matvec(&m, &v), "after gc");
+
+    // Applying the matrix again once the caches have been dropped must agree.
+    let twice = GcflobddT::from_matrix(&m, &matrix_grammar, &context).mk_matvec(&product, &context);
+    assert_components(
+        &twice,
+        &dense_matvec(&m, &dense_matvec(&m, &v)),
+        "second application after gc",
+    );
+}
