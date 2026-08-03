@@ -52,6 +52,23 @@
 //! which is again a matrix-vector product -- of the grid `A1` by the vector
 //! `Av` -- so the same deferred semiring applies, and one recursive call still
 //! produces the plan for every `Rhi` at once.
+//!
+//! # Kronecker product
+//!
+//! [`GcflobddT::mk_kron`] needs no recursion at all. Interleaving makes
+//! `A (x) B` the *concatenation* of the two variable blocks: the result's
+//! leading row and column bits are `A`'s, the trailing ones `B`'s, so its first
+//! `2p` variables are exactly `A`'s own layout and the rest exactly `B`'s.
+//!
+//! ```text
+//!     (A (x) B)[(rA,rB)][(cA,cB)] = A[rA][cA] * B[rB][cB]
+//! ```
+//!
+//! The result is therefore one two-layer node over
+//! [`Grammar::concat`](crate::grammar::Grammar::concat) that runs each operand
+//! on its own block -- built in one connection per exit of `A`, with both
+//! operands shared rather than copied, however large they are. The same holds
+//! for the tensor product of two vectors.
 
 mod map;
 pub(in crate::gcflobdd) mod node;
@@ -64,7 +81,7 @@ use std::rc::Rc;
 use crate::gcflobdd::GcflobddT;
 use crate::gcflobdd::connection::{Connection, ConnectionT};
 use crate::gcflobdd::context::Context;
-use crate::gcflobdd::matmul::node::{Valued, matmul_node, matvec_node, split};
+use crate::gcflobdd::matmul::node::{Valued, kron_node, matmul_node, matvec_node, split};
 use crate::gcflobdd::node::{GcflobddNode, GcflobddNodeType, InternalNode};
 use crate::grammar::{Grammar, GrammarNode, GrammarNodeType};
 use crate::utils::hash_cache::Rch;
@@ -500,6 +517,48 @@ impl<'grammar, T: MatMulValue> GcflobddT<'grammar, T> {
             &self.connection.return_map,
             &rhs.connection.return_map,
             self.grammar,
+            context,
+        )
+    }
+
+    /// The Kronecker product `self (x) rhs`, over `grammar` -- which must be
+    /// [`self.grammar.concat(rhs.grammar)`](Grammar::concat).
+    ///
+    /// In the interleaved order this is concatenation of the two variable
+    /// blocks, so it costs one connection per exit of `self` however large the
+    /// operands are, and the operands' diagrams are shared rather than copied.
+    ///
+    /// The same construction is the tensor product of two vectors: `self` runs
+    /// on the leading index bits and `rhs` on the trailing ones either way.
+    /// Concatenating two matrix grammars gives a matrix grammar, so results
+    /// feed straight back into [`mk_matmul`](Self::mk_matmul) and
+    /// [`mk_matvec`](Self::mk_matvec).
+    pub fn mk_kron(
+        &self,
+        rhs: &Self,
+        grammar: &'grammar Grammar,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Self {
+        let GrammarNodeType::Internal(children) = &grammar.root.node else {
+            panic!("kron needs the concatenation of the two operands' grammars")
+        };
+        assert!(
+            matches!(&children[..], [g1, g2]
+                if Rc::ptr_eq(g1, &self.grammar.root) && Rc::ptr_eq(g2, &rhs.grammar.root)),
+            "kron needs the concatenation of the two operands' grammars, in that order"
+        );
+
+        let product = kron_node(
+            &self.connection.entry_point,
+            &rhs.connection.entry_point,
+            &grammar.root,
+            context,
+        );
+        substitute(
+            product,
+            &self.connection.return_map,
+            &rhs.connection.return_map,
+            grammar,
             context,
         )
     }

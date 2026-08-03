@@ -440,6 +440,46 @@ pub(super) fn matmul_node<'grammar>(
     ans
 }
 
+/// The Kronecker product of `n1` and `n2`, symbolically.
+///
+/// `grammar` must be the concatenation of the two operands' grammars, so the
+/// result runs `n1` over the first block of variables and `n2` over the second
+/// -- which, in the interleaved order, is exactly what `A (x) B` means. There
+/// is no recursion and nothing to cache: the operands are embedded as they
+/// stand, and the work is one connection per exit of `n1`.
+///
+/// Exit `i * n2.num_exits + j` pairs exit `i` of `n1` with exit `j` of `n2`,
+/// which is already the canonical first-appearance order -- the exits of the
+/// first B-connection come first, then the second's, and so on.
+pub(super) fn kron_node<'grammar>(
+    n1: &Rch<GcflobddNode<'grammar>>,
+    n2: &Rch<GcflobddNode<'grammar>>,
+    grammar: &'grammar Rc<GrammarNode>,
+    context: &RefCell<Context<'grammar>>,
+) -> Valued<'grammar> {
+    let (na, nb) = (n1.num_exits, n2.num_exits);
+
+    let a_connection = Connection::new(n1.clone(), (0..na).collect(), context);
+    let b_connections = (0..na)
+        .map(|i| Connection::new(n2.clone(), (0..nb).map(|j| i * nb + j).collect(), context))
+        .collect();
+    let node = context.borrow_mut().add_gcflobdd_node(GcflobddNode {
+        num_exits: na * nb,
+        grammar,
+        node: GcflobddNodeType::Internal(InternalNode {
+            connections: vec![vec![a_connection], b_connections],
+        }),
+    });
+
+    // Every exit is one plain product; equal products collapse when the caller
+    // substitutes real values, which is also what reduces the whole diagram to
+    // a `DontCare` node when they all coincide.
+    let values = (0..na)
+        .flat_map(|i| (0..nb).map(move |j| MatMulMap::single(i, j)))
+        .collect();
+    valued(node, values)
+}
+
 /// Multiply the matrix denoted by `m` by the vector denoted by `v`,
 /// symbolically.
 ///

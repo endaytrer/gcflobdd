@@ -159,6 +159,44 @@ fn structured(level: usize) {
     );
 }
 
+/// Fold a 2x2 into a Walsh matrix by repeated Kronecker product. Each doubling
+/// squares the dimension, so `folds` steps reach `2^(2^folds)`.
+fn kronecker(folds: usize) {
+    println!("Kronecker: [[1,1],[1,-1]] doubled {folds} times:");
+    let mut grammars = vec![Grammar::new(&["S0 -> a a".to_string()]).unwrap()];
+    for i in 0..folds {
+        let doubled = grammars[i].concat(&grammars[i]);
+        grammars.push(doubled);
+    }
+    let context = RefCell::new(Context::default());
+
+    let hadamard = [vec![1i64, 1], vec![1, -1]];
+    let mut walsh = Matrix::from_matrix(&hadamard, &grammars[0], &context);
+    for (i, grammar) in grammars.iter().enumerate().skip(1) {
+        let dimension_bits = 1usize << i;
+        let next = timed(&format!("2^{dimension_bits} square"), &context, || {
+            walsh.mk_kron(&walsh, grammar, &context)
+        });
+        walsh = next;
+
+        // Every Walsh entry is the parity of `row & col`.
+        assert_eq!(walsh.entry(0, 0), 1);
+        assert_eq!(walsh.entry(1, 1), -1);
+        if dimension_bits >= 3 {
+            assert_eq!(walsh.entry(3, 5), -1);
+            assert_eq!(walsh.entry(6, 6), 1);
+        }
+    }
+
+    let before = context.borrow().node_count();
+    context.borrow_mut().gc();
+    println!(
+        "  gc: {} -> {} nodes",
+        before,
+        context.borrow().node_count()
+    );
+}
+
 fn main() {
     // The dense check is the algorithm's worst case -- a random matrix has no
     // structure to share -- so it stays small by default; --dense-level 4 (a
@@ -195,4 +233,6 @@ fn main() {
     for l in levels {
         structured(l);
     }
+    // A level-L balanced grammar is `S -> a a` doubled L-1 times.
+    kronecker(level - 1);
 }

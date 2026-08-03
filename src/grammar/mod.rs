@@ -101,6 +101,27 @@ impl Grammar {
             root: Self::parse_production(first_rule, &mut symbol_map, &mut terminal_node)?,
         })
     }
+    /// The grammar of `S -> A B`: this grammar's variables followed by
+    /// `other`'s.
+    ///
+    /// Both roots are reused rather than rebuilt, so diagrams already built
+    /// over either grammar embed into the combined one untouched -- node
+    /// identity is keyed on the grammar node's address. That is what makes
+    /// [`mk_kron`](crate::gcflobdd::GcflobddT::mk_kron) a constant-size
+    /// construction.
+    ///
+    /// Concatenating a grammar with itself repeatedly walks the balanced
+    /// family: `S -> a a` doubled `k` times is the balanced grammar of level
+    /// `k + 1`, with both groupings of every rule the same node.
+    pub fn concat(&self, other: &Grammar) -> Self {
+        Self {
+            root: Rc::new(GrammarNode::new(GrammarNodeType::Internal(vec![
+                self.root.clone(),
+                other.root.clone(),
+            ]))),
+        }
+    }
+
     /// The grammar of the vectors that this matrix grammar's matrices act on.
     ///
     /// A matrix grammar addresses a row and a column bit per position; the
@@ -246,6 +267,36 @@ mod tests {
         };
         assert_eq!(children[0].num_vars, 2);
         assert_eq!(children[1].num_vars, 1);
+    }
+
+    #[test]
+    fn test_concat() {
+        let a = Grammar::new(&["S0 -> a a".to_string()]).unwrap();
+        let b = Grammar::new(&["S1 -> S0 S0".to_string(), "S0 -> a a".to_string()]).unwrap();
+
+        let combined = a.concat(&b);
+        assert_eq!(combined.num_vars(), a.num_vars() + b.num_vars());
+        let GrammarNodeType::Internal(children) = &combined.root.node else {
+            panic!("expected an internal node")
+        };
+        // The operand roots are reused, not rebuilt.
+        assert!(Rc::ptr_eq(&children[0], &a.root));
+        assert!(Rc::ptr_eq(&children[1], &b.root));
+
+        // Doubling `S -> a a` walks the balanced family, both groupings of
+        // every rule being the same node.
+        let mut doubled = a.concat(&a);
+        assert_eq!(doubled.num_vars(), 4);
+        for expected in [8, 16] {
+            doubled = doubled.concat(&doubled);
+            assert_eq!(doubled.num_vars(), expected);
+            let GrammarNodeType::Internal(children) = &doubled.root.node else {
+                panic!("expected an internal node")
+            };
+            assert!(Rc::ptr_eq(&children[0], &children[1]));
+        }
+        // ... and halving one takes it back down.
+        assert_eq!(doubled.halved().num_vars(), 8);
     }
 
     #[test]

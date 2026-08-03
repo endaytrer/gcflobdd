@@ -642,3 +642,276 @@ fn matvec_survives_gc() {
         "second application after gc",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Kronecker product.
+// ---------------------------------------------------------------------------
+
+fn dense_kron<T: MatMulValue>(a: &[Vec<T>], b: &[Vec<T>]) -> Vec<Vec<T>> {
+    let nb = b.len();
+    (0..a.len() * nb)
+        .map(|row| {
+            (0..a.len() * nb)
+                .map(|col| a[row / nb][col / nb].mul(&b[row % nb][col % nb]))
+                .collect()
+        })
+        .collect()
+}
+
+fn dense_kron_vector<T: MatMulValue>(v: &[T], w: &[T]) -> Vec<T> {
+    v.iter().flat_map(|a| w.iter().map(|b| a.mul(b))).collect()
+}
+
+/// The 2x2, 4x4 and 8x8 grammars, the last unbalanced, to build operands from.
+fn kron_operand_grammars() -> Vec<(Grammar, usize)> {
+    matrix_grammars()
+        .into_iter()
+        .filter(|(_, n)| *n <= 8)
+        .collect()
+}
+
+#[test]
+fn kron_matches_dense_oracle() {
+    let mut state = 0x0abc_def0_1234_5678u64;
+    for (ga, na) in kron_operand_grammars() {
+        for (gb, nb) in kron_operand_grammars() {
+            let combined = ga.concat(&gb);
+            let context = RefCell::new(Context::default());
+
+            let a = random_matrix(na, &mut state, 3);
+            let b = random_matrix(nb, &mut state, 3);
+            let product = GcflobddT::from_matrix(&a, &ga, &context).mk_kron(
+                &GcflobddT::from_matrix(&b, &gb, &context),
+                &combined,
+                &context,
+            );
+            assert_entries(
+                &product,
+                &dense_kron(&a, &b),
+                &format!("{na}x{na} (x) {nb}x{nb}"),
+            );
+        }
+    }
+}
+
+#[test]
+fn kron_of_vectors_matches_dense_oracle() {
+    let mut state = 0x1a2b_3c4d_5e6f_7080u64;
+    for (ga, na) in kron_operand_grammars() {
+        for (gb, nb) in kron_operand_grammars() {
+            let (va, vb) = (ga.halved(), gb.halved());
+            let combined = va.concat(&vb);
+            let context = RefCell::new(Context::default());
+
+            let v = random_vector(na, &mut state, 3);
+            let w = random_vector(nb, &mut state, 3);
+            let product = GcflobddT::from_vector(&v, &va, &context).mk_kron(
+                &GcflobddT::from_vector(&w, &vb, &context),
+                &combined,
+                &context,
+            );
+            assert_components(
+                &product,
+                &dense_kron_vector(&v, &w),
+                &format!("vector {na} (x) {nb}"),
+            );
+        }
+    }
+}
+
+#[test]
+fn kron_preserves_structural_identities() {
+    for (ga, na) in kron_operand_grammars() {
+        for (gb, nb) in kron_operand_grammars() {
+            let combined = ga.concat(&gb);
+            let context = RefCell::new(Context::default());
+
+            // I_a (x) I_b is the identity of the combined space -- and must be
+            // the very same diagram, not merely an equal matrix.
+            let ia = GcflobddT::mk_identity(1i64, 0i64, &ga, &context);
+            let ib = GcflobddT::mk_identity(1i64, 0i64, &gb, &context);
+            assert_eq!(
+                ia.mk_kron(&ib, &combined, &context),
+                GcflobddT::mk_identity(1i64, 0i64, &combined, &context),
+                "I_{na} (x) I_{nb}"
+            );
+
+            // e_i (x) e_j = e_(i * nb + j).
+            let (va, vb) = (ga.halved(), gb.halved());
+            let combined_vector = va.concat(&vb);
+            for (i, j) in [(0, 0), (1, 0), (0, 1), (na - 1, nb - 1)] {
+                let ei = GcflobddT::mk_basis_vector(i, 1i64, 0i64, &va, &context);
+                let ej = GcflobddT::mk_basis_vector(j, 1i64, 0i64, &vb, &context);
+                assert_eq!(
+                    ei.mk_kron(&ej, &combined_vector, &context),
+                    GcflobddT::mk_basis_vector(i * nb + j, 1i64, 0i64, &combined_vector, &context),
+                    "e_{i} (x) e_{j} (nb={nb})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn kron_satisfies_the_mixed_product_property() {
+    // (A (x) B)(C (x) D) = (AC) (x) (BD), and the same against a vector. These
+    // check the three constructions against each other rather than against a
+    // shared dense oracle, and as diagram equality rather than entry by entry.
+    let mut state = 0x9f9f_1e1e_2d2d_3c3cu64;
+    for (ga, na) in kron_operand_grammars() {
+        for (gb, nb) in kron_operand_grammars() {
+            let combined = ga.concat(&gb);
+            let (va, vb) = (ga.halved(), gb.halved());
+            let combined_vector = va.concat(&vb);
+            let context = RefCell::new(Context::default());
+
+            let a = GcflobddT::from_matrix(&random_matrix(na, &mut state, 2), &ga, &context);
+            let c = GcflobddT::from_matrix(&random_matrix(na, &mut state, 2), &ga, &context);
+            let b = GcflobddT::from_matrix(&random_matrix(nb, &mut state, 2), &gb, &context);
+            let d = GcflobddT::from_matrix(&random_matrix(nb, &mut state, 2), &gb, &context);
+
+            let left = a
+                .mk_kron(&b, &combined, &context)
+                .mk_matmul(&c.mk_kron(&d, &combined, &context), &context);
+            let right =
+                a.mk_matmul(&c, &context)
+                    .mk_kron(&b.mk_matmul(&d, &context), &combined, &context);
+            assert_eq!(left, right, "(A (x) B)(C (x) D) at {na} (x) {nb}");
+
+            // The vector side lives over `concat` of the halved grammars, which
+            // mirrors `combined.halved()` structurally -- which is all that
+            // `mk_matvec` requires of it.
+            let v = GcflobddT::from_vector(&random_vector(na, &mut state, 2), &va, &context);
+            let w = GcflobddT::from_vector(&random_vector(nb, &mut state, 2), &vb, &context);
+            let applied = a
+                .mk_kron(&b, &combined, &context)
+                .mk_matvec(&v.mk_kron(&w, &combined_vector, &context), &context);
+            let separately = a.mk_matvec(&v, &context).mk_kron(
+                &b.mk_matvec(&w, &context),
+                &combined_vector,
+                &context,
+            );
+            assert_eq!(applied, separately, "(A (x) B)(v (x) w) at {na} (x) {nb}");
+        }
+    }
+}
+
+#[test]
+fn kron_collapses_colliding_products() {
+    // Values [1, 2] against [2, 1]: the pairs (0,1) and (1,0) both multiply to
+    // 2, so the result has fewer exits than the pairs it was built from and
+    // must still be the canonical diagram of that matrix.
+    let ga = Grammar::new(&["S0 -> a a".to_string()]).unwrap();
+    let gb = Grammar::new(&["S0 -> a a".to_string()]).unwrap();
+    let combined = ga.concat(&gb);
+    let context = RefCell::new(Context::default());
+
+    let a = vec![vec![1i64, 2], vec![2, 1]];
+    let b = vec![vec![2i64, 1], vec![1, 2]];
+    let product = GcflobddT::from_matrix(&a, &ga, &context).mk_kron(
+        &GcflobddT::from_matrix(&b, &gb, &context),
+        &combined,
+        &context,
+    );
+
+    let expected = dense_kron(&a, &b);
+    assert_entries(&product, &expected, "colliding products");
+    assert_eq!(
+        product,
+        GcflobddT::from_matrix(&expected, &combined, &context),
+        "a collapsed product must equal the tabulated matrix's diagram"
+    );
+
+    // An operand carrying a zero collapses further: every product against it is
+    // the same value.
+    let zeroed = vec![vec![0i64, 0], vec![0, 0]];
+    let with_zero = GcflobddT::from_matrix(&a, &ga, &context).mk_kron(
+        &GcflobddT::from_matrix(&zeroed, &gb, &context),
+        &combined,
+        &context,
+    );
+    assert_eq!(
+        with_zero,
+        GcflobddT::mk_constant(0i64, &combined, &context),
+        "A (x) 0 must be the constant zero diagram"
+    );
+}
+
+#[test]
+fn kron_folds_to_huge_operators() {
+    // Doubling 16 times: a 2^65536-square Walsh matrix. Each fold adds a
+    // constant number of nodes, so the whole thing stays tiny.
+    const FOLDS: usize = 16;
+    let mut grammars = vec![Grammar::new(&["S0 -> a a".to_string()]).unwrap()];
+    for i in 0..FOLDS {
+        let doubled = grammars[i].concat(&grammars[i]);
+        grammars.push(doubled);
+    }
+    let context = RefCell::new(Context::default());
+
+    let hadamard = vec![vec![1i64, 1], vec![1, -1]];
+    let mut walsh = GcflobddT::from_matrix(&hadamard, &grammars[0], &context);
+    let mut counts = Vec::new();
+    for grammar in grammars.iter().skip(1) {
+        walsh = walsh.mk_kron(&walsh, grammar, &context);
+        counts.push(context.borrow().node_count());
+    }
+
+    // H^(x)2 is the 4x4 Walsh matrix; the entry at (r, c) is the parity of
+    // r & c, which holds at every level.
+    let two_fold = GcflobddT::from_matrix(&hadamard, &grammars[0], &context);
+    let two_fold = two_fold.mk_kron(&two_fold, &grammars[1], &context);
+    for r in 0..4usize {
+        for c in 0..4usize {
+            let sign = if (r & c).count_ones() % 2 == 0 { 1 } else { -1 };
+            assert_eq!(two_fold.entry(r, c), sign, "H^(x)2 at ({r}, {c})");
+        }
+    }
+    // The same parity rule at the top of the fold, where the matrix has
+    // 2^65536 rows.
+    assert_eq!(walsh.entry(0, 0), 1);
+    assert_eq!(walsh.entry(1, 1), -1);
+    assert_eq!(walsh.entry(3, 5), -1); // 3 & 5 = 1, odd parity
+
+    // Growth per fold must be constant, not proportional to the dimension.
+    let growth = counts.last().unwrap() - counts.first().unwrap();
+    assert!(
+        growth < 10 * FOLDS,
+        "node count grew by {growth} over {FOLDS} folds: {counts:?}"
+    );
+
+    // The fold still composes with the other operations.
+    let vector_grammar = grammars[FOLDS].halved();
+    let basis = GcflobddT::mk_basis_vector(0, 1i64, 0i64, &vector_grammar, &context);
+    let column = walsh.mk_matvec(&basis, &context);
+    assert_eq!(column.component(0), 1);
+    assert_eq!(column.component(7), 1); // the first column of a Walsh matrix is all ones
+}
+
+#[test]
+fn kron_survives_gc() {
+    let mut state = 0xfeed_0000_beef_1111u64;
+    let ga = balanced_grammar(2); // 4 variables -> 4x4
+    let gb = Grammar::new(&["S0 -> a a".to_string()]).unwrap(); // 2x2
+    let combined = ga.concat(&gb);
+    let context = RefCell::new(Context::default());
+
+    let a = random_matrix(4, &mut state, 3);
+    let b = random_matrix(2, &mut state, 3);
+    let product = {
+        let da = GcflobddT::from_matrix(&a, &ga, &context);
+        let db = GcflobddT::from_matrix(&b, &gb, &context);
+        da.mk_kron(&db, &combined, &context)
+    };
+    context.borrow_mut().gc();
+
+    let expected = dense_kron(&a, &b);
+    assert_entries(&product, &expected, "after gc");
+    // ... and it still multiplies once the caches have been dropped.
+    let squared = product.mk_matmul(&product, &context);
+    assert_entries(
+        &squared,
+        &dense_mul(&expected, &expected),
+        "square after gc",
+    );
+}
