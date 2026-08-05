@@ -20,7 +20,7 @@ use std::{
 use std::{collections::HashMap, hash::DefaultHasher};
 
 pub struct GcflobddNode<'grammar> {
-    num_exits: usize,
+    pub(super) num_exits: usize,
     pub(super) grammar: &'grammar Rc<GrammarNode>,
     pub(super) node: GcflobddNodeType<'grammar>,
 }
@@ -277,6 +277,123 @@ impl<'grammar> GcflobddNode<'grammar> {
         };
         context.borrow_mut().add_gcflobdd_node(ans)
     }
+    /// Build the canonical node for an explicitly tabulated function.
+    ///
+    /// `table` is indexed by assignment with variable 0 as the *most*
+    /// significant bit -- i.e. `table[i]` holds the value of the assignment
+    /// that gives variable `v` the bit `(i >> (num_vars - 1 - v)) & 1` -- and
+    /// must have length `2^grammar.num_vars`. That ordering is the traversal
+    /// order of the node, so distinct values are met in exactly the canonical
+    /// exit order and the returned node needs no further reduction.
+    ///
+    /// Returns the interned node together with its exit values.
+    ///
+    /// Cost is `O(2^num_vars)`: this constructs small, densely given functions
+    /// (matrices in tests, hand-written operators); it is not a scalable way to
+    /// build a diagram.
+    pub(super) fn from_table<T: Clone + PartialEq>(
+        grammar: &'grammar Rc<GrammarNode>,
+        table: &[T],
+        context: &RefCell<Context<'grammar>>,
+    ) -> (Rch<Self>, Vec<T>) {
+        debug_assert_eq!(table.len(), 1usize << grammar.num_vars);
+        match &grammar.node {
+            GrammarNodeType::Terminal => {
+                if table[0] == table[1] {
+                    (
+                        Self::mk_no_distinction(grammar, context),
+                        vec![table[0].clone()],
+                    )
+                } else {
+                    (
+                        Self::mk_distinction(0, grammar, context),
+                        vec![table[0].clone(), table[1].clone()],
+                    )
+                }
+            }
+            GrammarNodeType::Bdd(_) => {
+                unimplemented!("from_table does not support BDD groupings")
+            }
+            GrammarNodeType::Internal(grammar_children) => {
+                // `classes[c]` is the residual table reached by every assignment
+                // that selects connection `c` of the layer being built. Because
+                // the table is indexed big-endian, a residual table is always a
+                // contiguous slice of `table`.
+                let mut classes: Vec<&[T]> = vec![table];
+                let mut connection_layers = Vec::with_capacity(grammar_children.len());
+                let mut remaining = grammar.num_vars;
+
+                for child in grammar_children {
+                    remaining -= child.num_vars;
+                    let sub_len = 1usize << remaining;
+                    let mut next_classes: Vec<&[T]> = Vec::new();
+                    let mut connections = Vec::with_capacity(classes.len());
+
+                    for class in classes {
+                        // The child node maps its own assignments to indices
+                        // into `next_classes`, so its exit values *are* the
+                        // connection's return map.
+                        let child_table = (0..(1usize << child.num_vars))
+                            .map(|hi| {
+                                let sub = &class[hi * sub_len..(hi + 1) * sub_len];
+                                match next_classes.iter().position(|c| *c == sub) {
+                                    Some(i) => i,
+                                    None => {
+                                        next_classes.push(sub);
+                                        next_classes.len() - 1
+                                    }
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        let (entry_point, return_map) =
+                            Self::from_table(child, &child_table, context);
+                        connections.push(Connection::new(entry_point, return_map, context));
+                    }
+                    connection_layers.push(connections);
+                    classes = next_classes;
+                }
+
+                let values = classes.iter().map(|c| c[0].clone()).collect::<Vec<_>>();
+                if values.len() == 1 {
+                    return (Self::mk_no_distinction(grammar, context), values);
+                }
+                let node = context.borrow_mut().add_gcflobdd_node(Self {
+                    num_exits: values.len(),
+                    grammar,
+                    node: GcflobddNodeType::Internal(InternalNode {
+                        connections: connection_layers,
+                    }),
+                });
+                (node, values)
+            }
+        }
+    }
+
+    /// Count the distinct nodes reachable from `node`, and the connections
+    /// leaving them.
+    ///
+    /// This measures one diagram, not the context's interning tables, so it is
+    /// the figure to compare against another implementation's node/edge counts.
+    pub(super) fn count_nodes_and_edges(
+        node: &Rch<Self>,
+        seen: &mut HashMap<usize, ()>,
+        nodes: &mut usize,
+        edges: &mut usize,
+    ) {
+        if seen.insert(Rc::as_ptr(node) as usize, ()).is_some() {
+            return;
+        }
+        *nodes += 1;
+        if let GcflobddNodeType::Internal(internal) = &node.node {
+            for layer in &internal.connections {
+                *edges += layer.len();
+                for connection in layer {
+                    Self::count_nodes_and_edges(&connection.entry_point, seen, nodes, edges);
+                }
+            }
+        }
+    }
+
     pub fn find_one_path_to(&self, value: usize) -> Vec<Option<bool>> {
         if self.num_exits == 1 {
             debug_assert_eq!(value, 0);
@@ -298,168 +415,6 @@ impl<'grammar> GcflobddNode<'grammar> {
                 }
             }
         }
-    }
-
-    pub fn mk_balanced_hadamard_voc12(
-        level: usize,
-        grammar: &'grammar Rc<GrammarNode>,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Rch<Self> {
-        if level == 2 {
-            return Self::mk_balanced_hadamard_voc12_2(grammar, context);
-        }
-
-        let GrammarNodeType::Internal(grammar_nodes) = &grammar.node else {
-            unreachable!("mk_hardamard_voc12 should have two groupings")
-        };
-        let [a, b] = &grammar_nodes[..] else {
-            unreachable!("mk_hardamard_voc12 should have two groupings")
-        };
-        let conn_a = Self::mk_balanced_hadamard_voc12(level - 1, a, context);
-        let conn_b = Self::mk_balanced_hadamard_voc12(level - 1, b, context);
-        let node_type = GcflobddNodeType::Internal(InternalNode {
-            connections: vec![
-                vec![Connection::new_sequential(conn_a, context)],
-                vec![
-                    Connection::new_sequential(conn_b.clone(), context),
-                    Connection::new(conn_b, vec![1, 0], context),
-                ],
-            ],
-        });
-        context.borrow_mut().add_gcflobdd_node(Self {
-            num_exits: 2,
-            grammar,
-            node: node_type,
-        })
-    }
-
-    pub fn mk_balanced_hadamard_voc13(
-        level: usize,
-        grammar: &'grammar Rc<GrammarNode>,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Rch<Self> {
-        if level == 2 {
-            return Self::mk_hadamard_voc13_2(grammar, context);
-        }
-
-        let GrammarNodeType::Internal(grammar_nodes) = &grammar.node else {
-            unreachable!("mk_hardamard_voc13 should have two groupings")
-        };
-        let [a, b] = &grammar_nodes[..] else {
-            unreachable!("mk_hardamard_voc13 should have two groupings")
-        };
-        let conn_a = Self::mk_balanced_hadamard_voc13(level - 1, a, context);
-        let conn_b = Self::mk_balanced_hadamard_voc13(level - 1, b, context);
-        let node_type = GcflobddNodeType::Internal(InternalNode {
-            connections: vec![
-                vec![Connection::new_sequential(conn_a, context)],
-                vec![
-                    Connection::new_sequential(conn_b.clone(), context),
-                    Connection::new(conn_b, vec![1, 0], context),
-                ],
-            ],
-        });
-        context.borrow_mut().add_gcflobdd_node(Self {
-            num_exits: 2,
-            grammar,
-            node: node_type,
-        })
-    }
-    fn mk_balanced_hadamard_voc12_2(
-        grammar: &'grammar Rc<GrammarNode>,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Rch<Self> {
-        let GrammarNodeType::Internal(grammar_nodes) = &grammar.node else {
-            unreachable!("mk_hardamard_voc12_2 should have 4 variables with two groupings")
-        };
-        let [a, b] = &grammar_nodes[..] else {
-            unreachable!("mk_hardamard_voc12_2 should have 4 variables with two groupings")
-        };
-        let a_conn = Self::mk_balanced_hadamard_2(a, context);
-        let b_conn = Self::mk_no_distinction(b, context);
-        let node_type = GcflobddNodeType::Internal(InternalNode {
-            connections: vec![
-                vec![Connection::new_sequential(a_conn, context)],
-                vec![
-                    Connection::new_sequential(b_conn.clone(), context),
-                    Connection::new_sequential(b_conn, context),
-                ],
-            ],
-        });
-        context.borrow_mut().add_gcflobdd_node(Self {
-            num_exits: 2,
-            grammar,
-            node: node_type,
-        })
-    }
-
-    fn mk_hadamard_voc13_2(
-        grammar: &'grammar Rc<GrammarNode>,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Rch<Self> {
-        let GrammarNodeType::Internal(grammar_nodes) = &grammar.node else {
-            unreachable!("mk_hardamard_voc12_2 should have 4 variables with two groupings")
-        };
-        let [a, b] = &grammar_nodes[..] else {
-            unreachable!("mk_hardamard_voc12_2 should have 4 variables with two groupings")
-        };
-        let a_conn = Self::mk_distinction(0, a, context);
-        let b0_conn = Self::mk_no_distinction(b, context);
-        let b1_conn = Self::mk_distinction(0, b, context);
-        let node_type = GcflobddNodeType::Internal(InternalNode {
-            connections: vec![
-                vec![Connection::new_sequential(a_conn, context)],
-                vec![
-                    Connection::new_sequential(b0_conn, context),
-                    Connection::new_sequential(b1_conn, context),
-                ],
-            ],
-        });
-        context.borrow_mut().add_gcflobdd_node(Self {
-            num_exits: 3,
-            grammar,
-            node: node_type,
-        })
-    }
-
-    fn mk_balanced_hadamard_2(
-        grammar: &'grammar Rc<GrammarNode>,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Rch<Self> {
-        let node_type = match &grammar.node {
-            GrammarNodeType::Internal(grammar_nodes) => {
-                let [a, b] = &grammar_nodes[..] else {
-                    unreachable!("mk_hadamard_2 should have two variables")
-                };
-                debug_assert!(
-                    matches!(a.node, GrammarNodeType::Terminal),
-                    "mk_hadamard_2 should have two variables"
-                );
-                debug_assert!(
-                    matches!(b.node, GrammarNodeType::Terminal),
-                    "mk_hadamard_2 should have two variables"
-                );
-                let a_conn = Self::mk_distinction(0, a, context);
-                let b0_conn = Self::mk_no_distinction(b, context);
-                let b1_conn = Self::mk_distinction(0, b, context);
-                GcflobddNodeType::Internal(InternalNode {
-                    connections: vec![
-                        vec![Connection::new_sequential(a_conn, context)],
-                        vec![
-                            Connection::new_sequential(b0_conn, context),
-                            Connection::new_sequential(b1_conn, context),
-                        ],
-                    ],
-                })
-            }
-            GrammarNodeType::Bdd(2) => GcflobddNodeType::Bdd(Bdd::mk_hadamard_2(context)),
-            _ => unreachable!("mk_hadamard_2 should have two variables"),
-        };
-        context.borrow_mut().add_gcflobdd_node(Self {
-            num_exits: 2,
-            grammar,
-            node: node_type,
-        })
     }
 
     pub fn pair_product(
@@ -853,8 +808,11 @@ impl<'grammar> GcflobddNode<'grammar> {
                         )
                     };
 
+                    // Not every value the reduce matrix can produce is
+                    // necessarily reachable, so the node's exits are the ones
+                    // `return_map` actually collected, not `num_exits`.
                     let entry_point = context.borrow_mut().add_gcflobdd_node(Self {
-                        num_exits,
+                        num_exits: return_map.len(),
                         grammar: lhs.grammar,
                         node: GcflobddNodeType::Internal(InternalNode {
                             connections: new_connection_list,

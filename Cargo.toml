@@ -18,6 +18,9 @@ sync = ["dep:parking_lot"]
 separate_reduce_map = []
 fx-hash = ["dep:rustc-hash"]
 complex = ["dep:rug"]
+# Arbitrary-precision path coefficients: no qubit ceiling, at a cost measured
+# in BENCHMARKS.md. Without it coefficients are i128 and overflow panics.
+bigint = ["dep:rug"]
 
 [[test]]
 name = "n_queens"
@@ -25,4 +28,12 @@ harness = false
 
 [[test]]
 name = "xor"
+harness = false
+
+[[test]]
+name = "matmul"
+harness = false
+
+[[test]]
+name = "quantum"
 harness = false

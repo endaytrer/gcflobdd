@@ -101,6 +101,86 @@ impl Grammar {
             root: Self::parse_production(first_rule, &mut symbol_map, &mut terminal_node)?,
         })
     }
+    /// The grammar of `S -> A B`: this grammar's variables followed by
+    /// `other`'s.
+    ///
+    /// Both roots are reused rather than rebuilt, so diagrams already built
+    /// over either grammar embed into the combined one untouched -- node
+    /// identity is keyed on the grammar node's address. That is what makes
+    /// [`mk_kron`](crate::gcflobdd::GcflobddT::mk_kron) a constant-size
+    /// construction.
+    ///
+    /// Concatenating a grammar with itself repeatedly walks the balanced
+    /// family: `S -> a a` doubled `k` times is the balanced grammar of level
+    /// `k + 1`, with both groupings of every rule the same node.
+    pub fn concat(&self, other: &Grammar) -> Self {
+        Self {
+            root: Rc::new(GrammarNode::new(GrammarNodeType::Internal(vec![
+                self.root.clone(),
+                other.root.clone(),
+            ]))),
+        }
+    }
+
+    /// The grammar of the vectors that this matrix grammar's matrices act on.
+    ///
+    /// A matrix grammar addresses a row and a column bit per position; the
+    /// halved grammar is the same tree with every `S -> a a` leaf collapsed to
+    /// a single terminal, so it addresses exactly one of the two halves and
+    /// covers `num_vars() / 2` variables.
+    ///
+    /// Sharing is preserved: a symbol used twice in the source is one shared
+    /// node in the result, so a balanced matrix grammar halves to a balanced
+    /// vector grammar (and node tables keep sharing accordingly).
+    ///
+    /// Panics unless every grouping is binary with `S -> a a` at the leaves --
+    /// the shape [`mk_matmul`](crate::gcflobdd::GcflobddT::mk_matmul) requires.
+    pub fn halved(&self) -> Self {
+        let mut terminal = None;
+        let mut memo = HashMap::default();
+        Self {
+            root: Self::halve_node(&self.root, &mut terminal, &mut memo),
+        }
+    }
+
+    fn halve_node(
+        node: &Rc<GrammarNode>,
+        terminal: &mut Option<Rc<GrammarNode>>,
+        memo: &mut HashMap<usize, Rc<GrammarNode>>,
+    ) -> Rc<GrammarNode> {
+        let key = Rc::as_ptr(node) as usize;
+        if let Some(halved) = memo.get(&key) {
+            return halved.clone();
+        }
+        let GrammarNodeType::Internal(children) = &node.node else {
+            panic!("halved() requires binary groupings, found a BDD or terminal grouping")
+        };
+        let [g1, g2] = &children[..] else {
+            panic!(
+                "halved() requires binary groupings, found a rule with {} symbols on the right",
+                children.len()
+            )
+        };
+        let terminals = matches!(g1.node, GrammarNodeType::Terminal) as usize
+            + matches!(g2.node, GrammarNodeType::Terminal) as usize;
+        let halved = match terminals {
+            // `S -> a a` addresses one row bit and one column bit; halved, it
+            // is a single variable.
+            2 => terminal
+                .get_or_insert_with(|| Rc::new(GrammarNode::new(GrammarNodeType::Terminal)))
+                .clone(),
+            0 => Rc::new(GrammarNode::new(GrammarNodeType::Internal(vec![
+                Self::halve_node(g1, terminal, memo),
+                Self::halve_node(g2, terminal, memo),
+            ]))),
+            _ => panic!(
+                "halved() requires a grouping to hold either two terminals or two non-terminals"
+            ),
+        };
+        memo.insert(key, halved.clone());
+        halved
+    }
+
     pub fn new_bdd(size: usize) -> Self {
         Self {
             root: Rc::new(GrammarNode {
@@ -147,6 +227,82 @@ mod tests {
         assert_eq!(grammar.root.num_vars, 16);
         // should not contain recursive rule
         Grammar::new(&["S1 -> S1".to_string(), "S0 -> a".to_string()]).unwrap_err();
+    }
+
+    #[test]
+    fn test_halved() {
+        // The smallest matrix grammar halves to a bare terminal.
+        let grammar = Grammar::new(&["S0 -> a a".to_string()]).unwrap();
+        let halved = grammar.halved();
+        assert_eq!(halved.num_vars(), 1);
+        assert!(matches!(halved.root.node, GrammarNodeType::Terminal));
+
+        // Balanced in, balanced out -- and the two groupings of each rule stay
+        // the *same* node, or node tables would lose their sharing.
+        let grammar = Grammar::new(&[
+            "S2 -> S1 S1".to_string(),
+            "S1 -> S0 S0".to_string(),
+            "S0 -> a a".to_string(),
+        ])
+        .unwrap();
+        let halved = grammar.halved();
+        assert_eq!(halved.num_vars(), grammar.num_vars() / 2);
+        let GrammarNodeType::Internal(children) = &halved.root.node else {
+            panic!("expected an internal node")
+        };
+        assert!(Rc::ptr_eq(&children[0], &children[1]));
+
+        // Unbalanced splits are mirrored, halving each grouping.
+        let grammar = Grammar::new(&[
+            "S -> A B".to_string(),
+            "A -> C C".to_string(),
+            "C -> a a".to_string(),
+            "B -> a a".to_string(),
+        ])
+        .unwrap();
+        let halved = grammar.halved();
+        assert_eq!(halved.num_vars(), 3);
+        let GrammarNodeType::Internal(children) = &halved.root.node else {
+            panic!("expected an internal node")
+        };
+        assert_eq!(children[0].num_vars, 2);
+        assert_eq!(children[1].num_vars, 1);
+    }
+
+    #[test]
+    fn test_concat() {
+        let a = Grammar::new(&["S0 -> a a".to_string()]).unwrap();
+        let b = Grammar::new(&["S1 -> S0 S0".to_string(), "S0 -> a a".to_string()]).unwrap();
+
+        let combined = a.concat(&b);
+        assert_eq!(combined.num_vars(), a.num_vars() + b.num_vars());
+        let GrammarNodeType::Internal(children) = &combined.root.node else {
+            panic!("expected an internal node")
+        };
+        // The operand roots are reused, not rebuilt.
+        assert!(Rc::ptr_eq(&children[0], &a.root));
+        assert!(Rc::ptr_eq(&children[1], &b.root));
+
+        // Doubling `S -> a a` walks the balanced family, both groupings of
+        // every rule being the same node.
+        let mut doubled = a.concat(&a);
+        assert_eq!(doubled.num_vars(), 4);
+        for expected in [8, 16] {
+            doubled = doubled.concat(&doubled);
+            assert_eq!(doubled.num_vars(), expected);
+            let GrammarNodeType::Internal(children) = &doubled.root.node else {
+                panic!("expected an internal node")
+            };
+            assert!(Rc::ptr_eq(&children[0], &children[1]));
+        }
+        // ... and halving one takes it back down.
+        assert_eq!(doubled.halved().num_vars(), 8);
+    }
+
+    #[test]
+    #[should_panic(expected = "binary groupings")]
+    fn test_halved_rejects_non_binary() {
+        Grammar::new(&["S -> a a a".to_string()]).unwrap().halved();
     }
 }
 

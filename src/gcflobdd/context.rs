@@ -3,6 +3,7 @@ use crate::gcflobdd::GcflobddInt;
 use crate::gcflobdd::bdd::connection::{BddConnection, BddConnectionPair};
 use crate::gcflobdd::bdd::node::BddNode;
 use crate::gcflobdd::connection::{Connection, ConnectionPair};
+use crate::gcflobdd::matmul::node::Valued;
 use crate::gcflobdd::node::GcflobddNode;
 use crate::gcflobdd::return_map::ReturnMap;
 use crate::utils::hash_cache::{HashCached, Rch};
@@ -26,6 +27,8 @@ impl ReductionCacheKey {
         Self(Rc::as_ptr(node) as usize, reduction_map.to_vec())
     }
 }
+
+type MatMulCacheKey = (usize, usize, Option<usize>, Option<usize>);
 
 #[repr(usize)]
 pub enum BoolOperation {
@@ -64,6 +67,11 @@ pub struct Context<'grammar> {
     bdd_pair_map_cache: HashMap<(usize, usize, usize), BddConnection>,
     reduction_cache: HashMap<ReductionCacheKey, Rch<GcflobddNode<'grammar>>>,
     bdd_reduction_cache: HashMap<ReductionCacheKey, Rch<BddNode>>,
+    /// (lhs, rhs, lhs zero exit, rhs zero exit) -> symbolic product. The key is
+    /// purely structural, so one cache serves every value type.
+    matmul_cache: HashMap<MatMulCacheKey, Valued<'grammar>>,
+    /// The same, for a matrix times a vector.
+    matvec_cache: HashMap<MatMulCacheKey, Valued<'grammar>>,
 
     op_cache: [HashMap<(Gcflobdd<'grammar>, Gcflobdd<'grammar>), Gcflobdd<'grammar>>;
         BoolOperation::End as usize],
@@ -192,6 +200,52 @@ impl<'grammar> Context<'grammar> {
     ) -> Option<Rch<BddNode>> {
         let key = ReductionCacheKey::new(n, indices);
         self.bdd_reduction_cache.get(&key).cloned()
+    }
+    pub(super) fn get_matmul_cache(
+        &self,
+        n1: &Rch<GcflobddNode>,
+        n2: &Rch<GcflobddNode>,
+        z1: Option<usize>,
+        z2: Option<usize>,
+    ) -> Option<Valued<'grammar>> {
+        let hash1 = Rc::as_ptr(n1) as usize;
+        let hash2 = Rc::as_ptr(n2) as usize;
+        self.matmul_cache.get(&(hash1, hash2, z1, z2)).cloned()
+    }
+    pub(super) fn set_matmul_cache(
+        &mut self,
+        n1: &Rch<GcflobddNode>,
+        n2: &Rch<GcflobddNode>,
+        z1: Option<usize>,
+        z2: Option<usize>,
+        product: Valued<'grammar>,
+    ) {
+        let hash1 = Rc::as_ptr(n1) as usize;
+        let hash2 = Rc::as_ptr(n2) as usize;
+        self.matmul_cache.insert((hash1, hash2, z1, z2), product);
+    }
+    pub(super) fn get_matvec_cache(
+        &self,
+        m: &Rch<GcflobddNode>,
+        v: &Rch<GcflobddNode>,
+        zm: Option<usize>,
+        zv: Option<usize>,
+    ) -> Option<Valued<'grammar>> {
+        let hash1 = Rc::as_ptr(m) as usize;
+        let hash2 = Rc::as_ptr(v) as usize;
+        self.matvec_cache.get(&(hash1, hash2, zm, zv)).cloned()
+    }
+    pub(super) fn set_matvec_cache(
+        &mut self,
+        m: &Rch<GcflobddNode>,
+        v: &Rch<GcflobddNode>,
+        zm: Option<usize>,
+        zv: Option<usize>,
+        product: Valued<'grammar>,
+    ) {
+        let hash1 = Rc::as_ptr(m) as usize;
+        let hash2 = Rc::as_ptr(v) as usize;
+        self.matvec_cache.insert((hash1, hash2, zm, zv), product);
     }
     pub(super) fn set_pair_product_cache(
         &mut self,
@@ -323,6 +377,8 @@ impl<'grammar> Context<'grammar> {
             * (size_of::<ReductionCacheKey>() + size_of::<Rch<GcflobddNode<'grammar>>>());
         total_size += self.bdd_reduction_cache.len()
             * (size_of::<ReductionCacheKey>() + size_of::<Rch<BddNode>>());
+        total_size += (self.matmul_cache.len() + self.matvec_cache.len())
+            * (size_of::<MatMulCacheKey>() + size_of::<Valued<'grammar>>());
 
         total_size += self.op_cache.iter().fold(0, |acc, cache| {
             acc + cache.len() * (3 * size_of::<Gcflobdd<'grammar>>())
@@ -404,6 +460,8 @@ impl<'grammar> Context<'grammar> {
         self.int_op_cache.iter_mut().for_each(|map| map.clear());
         self.pair_map_cache.clear();
         self.bdd_pair_map_cache.clear();
+        self.matmul_cache.clear();
+        self.matvec_cache.clear();
         Self::gcflobdd_node_table_gc(&mut self.gcflobdd_node_table);
         Self::bdd_node_table_gc(&mut self.bdd_node_table);
         // clear return map after node table gc

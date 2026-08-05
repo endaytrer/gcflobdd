@@ -3,6 +3,7 @@ mod bdd;
 pub mod complex;
 mod connection;
 pub mod context;
+pub mod matmul;
 mod node;
 mod return_map;
 #[cfg(test)]
@@ -219,44 +220,27 @@ impl Not for Gcflobdd<'_> {
 pub type GcflobddInt<'grammar> = GcflobddT<'grammar, i32>;
 
 impl<'grammar> GcflobddInt<'grammar> {
-    pub fn mk_hadamard_voc12(
-        level: usize,
-        grammar: &'grammar Grammar,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Self {
-        Self {
-            connection: ConnectionT {
-                entry_point: GcflobddNode::mk_balanced_hadamard_voc12(
-                    level,
-                    &grammar.root,
-                    context,
-                ),
-                return_map: vec![1, -1],
-            },
-            grammar,
-        }
-    }
-    pub fn mk_hadamard_voc13(
-        level: usize,
-        grammar: &'grammar Grammar,
-        context: &RefCell<Context<'grammar>>,
-    ) -> Self {
-        Self {
-            connection: ConnectionT {
-                entry_point: GcflobddNode::mk_balanced_hadamard_voc13(
-                    level,
-                    &grammar.root,
-                    context,
-                ),
-                return_map: vec![1, -1],
-            },
-            grammar,
-        }
-    }
-
     define_int_op!(mk_add, Add, a, b, a + b);
     define_int_op!(mk_sub, Sub, a, b, a - b);
     define_int_op!(mk_mul, Mul, a, b, a * b);
+}
+
+impl<'grammar, T> GcflobddT<'grammar, T> {
+    /// The size of *this diagram*: distinct nodes reachable from its root, and
+    /// the connections leaving them.
+    ///
+    /// Not the same thing as [`Context::node_count`], which counts everything
+    /// interned so far, intermediates included.
+    pub fn count_nodes_and_edges(&self) -> (usize, usize) {
+        let (mut nodes, mut edges) = (0, 0);
+        GcflobddNode::count_nodes_and_edges(
+            &self.connection.entry_point,
+            &mut HashMap::default(),
+            &mut nodes,
+            &mut edges,
+        );
+        (nodes, edges)
+    }
 }
 
 impl<'grammar, T: Eq> GcflobddT<'grammar, T> {
@@ -298,6 +282,50 @@ impl<'grammar, T: Copy> GcflobddT<'grammar, T> {
                 return_map: mapped_return_map,
             },
             grammar: self.grammar,
+        }
+    }
+}
+
+impl<'grammar, T: Clone + PartialEq> GcflobddT<'grammar, T> {
+    /// Build a diagram from an explicitly tabulated function.
+    ///
+    /// `table` must have length `2^grammar.num_vars()` and is indexed with
+    /// variable 0 as the most significant bit, so `table[i]` is the value at
+    /// the assignment whose variable `v` is `(i >> (num_vars - 1 - v)) & 1`.
+    ///
+    /// Cost is `O(2^num_vars)` -- for small, densely given functions only.
+    pub fn from_table(
+        table: &[T],
+        grammar: &'grammar Grammar,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Self {
+        assert_eq!(
+            table.len(),
+            1usize << grammar.num_vars(),
+            "table must have one entry per assignment"
+        );
+        let (entry_point, return_map) = GcflobddNode::from_table(&grammar.root, table, context);
+        Self {
+            connection: ConnectionT {
+                entry_point,
+                return_map,
+            },
+            grammar,
+        }
+    }
+
+    /// The diagram that maps every assignment to `value`.
+    pub fn mk_constant(
+        value: T,
+        grammar: &'grammar Grammar,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Self {
+        Self {
+            connection: ConnectionT {
+                entry_point: GcflobddNode::mk_no_distinction(&grammar.root, context),
+                return_map: vec![value],
+            },
+            grammar,
         }
     }
 }
