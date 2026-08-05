@@ -15,12 +15,18 @@
 #   CPP_BIN   path to the reference binary   (default ../cflobdd/CFLOBDD/cflobdd)
 #   RUST_BIN  path to this crate's benchmark (default: newest target/release build)
 #   OUT       output CSV                     (default results/quantum_compare.csv)
+#   LABEL     name for this crate's rows     (default rust; e.g. rust-bigint)
+#   ONLY      rust | cpp | both              (default both)
+#   APPEND    1 to add to an existing CSV rather than start one
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
 CPP_BIN=${CPP_BIN:-$here/../cflobdd/CFLOBDD/cflobdd}
 RUST_BIN=${RUST_BIN:-}
 OUT=${OUT:-$here/results/quantum_compare.csv}
+LABEL=${LABEL:-rust}
+ONLY=${ONLY:-both}
+APPEND=${APPEND:-0}
 TIMEOUT=${TIMEOUT:-300}
 PMIN=${PMIN:-1}
 PMAX=${PMAX:-8}
@@ -30,11 +36,17 @@ if [ -z "$RUST_BIN" ]; then
   cargo build --release --test quantum --manifest-path "$here/Cargo.toml" >/dev/null 2>&1
   RUST_BIN=$(ls -t "$here"/target/release/deps/quantum-* 2>/dev/null | grep -v '\.d$' | head -1)
 fi
-[ -x "$RUST_BIN" ] || { echo "error: rust benchmark not built" >&2; exit 1; }
-[ -x "$CPP_BIN"  ] || { echo "error: $CPP_BIN not built" >&2; exit 1; }
+[ "$ONLY" = cpp  ] || [ -x "$RUST_BIN" ] || { echo "error: rust benchmark not built" >&2; exit 1; }
+[ "$ONLY" = rust ] || [ -x "$CPP_BIN"  ] || { echo "error: $CPP_BIN not built" >&2; exit 1; }
 
 mkdir -p "$(dirname "$OUT")"
-echo "impl,algo,p,qubits,seed,wall_s,peak_rss_kb,duration_ms,duration_us,nodes,edges,total,correct,status" > "$OUT"
+if [ "$APPEND" != 1 ] || [ ! -s "$OUT" ]; then
+  echo "impl,algo,p,qubits,seed,wall_s,peak_rss_kb,duration_ms,duration_us,nodes,edges,total,correct,status" > "$OUT"
+fi
+
+# Skip a side entirely when ONLY selects the other one.
+run_rust() { [ "$ONLY" = cpp  ] || run "$LABEL" "$RUST_BIN" "$@"; }
+run_cpp()  { [ "$ONLY" = rust ] || run cpp      "$CPP_BIN"  "$@"; }
 
 tmp_out=$(mktemp); tmp_time=$(mktemp)
 trap 'rm -f "$tmp_out" "$tmp_time"' EXIT
@@ -89,10 +101,12 @@ ALGOS=("$@")
 if want ghz "${ALGOS[@]}"; then
   for p in $(seq "$PMIN" "$PMAX"); do
     rust_ok=1; cpp_ok=1
-    [ ${RUST_DONE_ghz:-0} -eq 1 ] || run rust "$RUST_BIN" ghz testGHZAlgo "$p" || rust_ok=0
-    [ ${CPP_DONE_ghz:-0}  -eq 1 ] || run cpp  "$CPP_BIN"  ghz testGHZAlgo "$p" || cpp_ok=0
+    [ ${RUST_DONE_ghz:-0} -eq 1 ] || run_rust ghz testGHZAlgo "$p" || rust_ok=0
+    [ ${CPP_DONE_ghz:-0}  -eq 1 ] || run_cpp  ghz testGHZAlgo "$p" || cpp_ok=0
     [ $rust_ok -eq 1 ] || RUST_DONE_ghz=1
     [ $cpp_ok  -eq 1 ] || CPP_DONE_ghz=1
+    [ "$ONLY" = rust ] && CPP_DONE_ghz=1
+    [ "$ONLY" = cpp  ] && RUST_DONE_ghz=1
     [ ${RUST_DONE_ghz:-0} -eq 1 ] && [ ${CPP_DONE_ghz:-0} -eq 1 ] && break
   done
 fi
@@ -102,10 +116,12 @@ for spec in "bv testBVAlgo $PMAX" "dj testDJAlgo $PMAX" "qft testQFT 6"; do
   algo=$1 test=$2 cap=$3
   want "$algo" "${ALGOS[@]}" || continue
   rust_done=0; cpp_done=0
+  [ "$ONLY" = rust ] && cpp_done=1
+  [ "$ONLY" = cpp  ] && rust_done=1
   for p in $(seq "$PMIN" "$(( PMAX < cap ? PMAX : cap ))"); do
     for s in $SEEDS; do
-      [ $rust_done -eq 1 ] || run rust "$RUST_BIN" "$algo" "$test" "$p" "$s" || rust_done=1
-      [ $cpp_done  -eq 1 ] || run cpp  "$CPP_BIN"  "$algo" "$test" "$p" "$s" || cpp_done=1
+      [ $rust_done -eq 1 ] || run_rust "$algo" "$test" "$p" "$s" || rust_done=1
+      [ $cpp_done  -eq 1 ] || run_cpp  "$algo" "$test" "$p" "$s" || cpp_done=1
     done
     [ $rust_done -eq 1 ] && [ $cpp_done -eq 1 ] && break
   done

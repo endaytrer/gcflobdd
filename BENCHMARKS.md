@@ -5,87 +5,114 @@ Quantum-algorithm and matrix-operation benchmarks, measured against
 `../cflobdd`) on the same machine.
 
 **Machine**: Fedora 44, Linux 7.1.4, 24 cores, 62 GB RAM.
-**Rust**: `cargo build --release --test quantum` (rustc, `-C opt-level=3`).
+**Rust**: `cargo build --release --test quantum --features bigint`.
 **C++**: prebuilt `./cflobdd`, gcc 16.1.1, Boost 1.90.
 
 Reproduce with:
 
 ```bash
-scripts/compare_cflobdd.sh              # writes results/quantum_compare.csv
-PMAX=4 scripts/compare_cflobdd.sh qft   # QFT only; the C++ side OOMs past 16 qubits
+# the full ladder, 2 to 65536 qubits, both implementations
+LABEL=rust-bigint ONLY=rust RUST_BIN=<bigint build> PMAX=16 SEEDS=1 \
+  OUT=results/ladder.csv scripts/compare_cflobdd.sh ghz bv dj
+ONLY=cpp PMAX=16 SEEDS=1 APPEND=1 OUT=results/ladder.csv scripts/compare_cflobdd.sh ghz bv dj
+
+PMAX=4 scripts/compare_cflobdd.sh qft   # QFT separately; both sides die past 16 qubits
 cargo test --test matmul --release      # matrix operations (this crate only)
 ```
 
 ## TL;DR
 
-**This crate is faster on every algorithm at every size both implementations
-run**, by 1x to 25x depending on algorithm and size, and its diagrams are 2x to
-460x smaller. It is *not* a uniform win: the reference reaches 256 qubits on
-Bernstein-Vazirani and Deutsch-Jozsa where this crate stops at 64, because its
-path coefficients are arbitrary-precision integers and ours are `i128`.
+Both implementations run GHZ, Bernstein-Vazirani and Deutsch-Jozsa correctly at
+every size from 2 to **65536 qubits**. At the top of that ladder:
 
-| | this crate | reference C++ |
-|---|---|---|
-| GHZ, 256 qubits | 7.1 ms | 7.0 ms |
-| Bernstein-Vazirani, 64 qubits | **0.9 ms** | 2 ms |
-| Deutsch-Jozsa, 64 qubits | **0.4 ms** | 2 ms |
-| QFT, 16 qubits | **58 ms**, 287 nodes+edges | 190 ms, **132,238** nodes+edges |
-| max qubits, BV / DJ | 64 | **256** |
-| max qubits, QFT | 16 (32 does not finish) | 16 (32 exhausts memory) |
-| process startup | ~1 ms, 5 MB RSS | ~350 ms, 866 MB RSS |
+| | this crate | reference C++ | |
+|---|--:|--:|---|
+| **GHZ**, 65536 qubits | 2.18 s | 2.35 s | parity |
+| **Bernstein-Vazirani**, 65536 qubits | **167 ms** | 429 ms | **2.6x** |
+| **Deutsch-Jozsa**, 65536 qubits | **24 ms** | 89 ms | **3.8x** |
+| **QFT**, 16 qubits | **102 ms** | 194 ms | **1.9x** |
+| GHZ diagram, 65536 qubits | **216** | 914 | 4.2x smaller |
+| BV diagram, 65536 qubits | **33,493** | 58,799 | 1.8x smaller |
+| QFT diagram, 16 qubits | **287** | 132,238 | 461x smaller |
+| peak RSS, 65536 qubits | **392-737 MB** | 987-1091 MB | |
+
+Every run finishes inside 5 s wall-clock, the largest being GHZ at 2.8 s.
+
+**Where each wins.** This crate is faster on BV, DJ and QFT at every size --
+1.4x to 8x, the wider ratios at small sizes partly an artefact of the
+reference's millisecond timer -- and holds a 1.8x to 4x smaller diagram
+throughout. GHZ is a tie: the two trade places by ±16% from 512 qubits up,
+because that circuit is `n` sequential gates for both. Neither implementation
+now reaches further than the other: the `i128` ceiling that used to stop BV and
+DJ at 64 qubits is gone (see *Arbitrary-precision coefficients*).
 
 ## Results
 
-Times are the median over seeds of each implementation's *own* internal timer,
-around the same phase of the algorithm. Size is nodes+edges of the result
-diagram (`CountNodesAndEdges` there, `count_nodes_and_edges` here).
+Times are each implementation's *own* internal timer around the same phase of
+the algorithm. Size is nodes+edges of the result diagram (`CountNodesAndEdges`
+there, `count_nodes_and_edges` here). One seed per size; `results/ladder.csv`
+has every run.
 
 ### GHZ
 
 | qubits | rust | c++ | ratio | rust size | c++ size |
 |--:|--:|--:|--:|--:|--:|
-| 4 | 90 us | 2 ms | 22x | 20 | 130 |
-| 16 | 326 us | 2 ms | 6.1x | 48 | 242 |
-| 64 | 2.1 ms | 3 ms | 1.4x | 76 | 354 |
-| 256 | 7.1 ms | 7 ms | 1.0x | 104 | 466 |
+| 8 | 0.16 ms | 2 ms | 12.7x | 34 | 186 |
+| 256 | 6.2 ms | 7 ms | 1.1x | 104 | 466 |
+| 4096 | 97 ms | 89 ms | 0.9x | 160 | 690 |
+| 16384 | 450 ms | 388 ms | 0.9x | 188 | 802 |
+| 65536 | 2184 ms | 2350 ms | 1.1x | **216** | 914 |
 
-Both are logarithmic in the qubit count; the reference gains 56 nodes+edges per
-doubling, this crate 14. The time advantage narrows to parity at 256 qubits
-because the two do different work here (see *Caveats*).
+Both diagrams are logarithmic: the reference gains 56 nodes+edges per doubling
+of the qubit count, this crate 14. Runtime is linear in qubits for both, since
+the circuit is a chain of `n` CNOTs applied one at a time. Neither implementation
+has a structural edge here, and the ratio wanders around 1.0 accordingly.
 
 ### Bernstein-Vazirani
 
 | qubits | rust | c++ | ratio | rust size | c++ size |
 |--:|--:|--:|--:|--:|--:|
-| 4 | 104 us | 1 ms | 9.6x | 29 | 100 |
-| 16 | 287 us | 2 ms | 7.0x | 77 | 209 |
-| 64 | 948 us | 2 ms | 2.1x | 161 | 370 |
-| 128 | **overflow** | 3 ms | - | - | 524 |
-| 256 | **overflow** | 4 ms | - | - | 776 |
+| 8 | 0.44 ms | 1 ms | 2.3x | 51 | 146 |
+| 256 | 1.5 ms | 4 ms | 2.6x | 389 | 776 |
+| 4096 | 14 ms | 32 ms | 2.3x | 3,129 | 5,627 |
+| 16384 | 43 ms | 110 ms | 2.5x | 9,385 | 16,540 |
+| 65536 | **167 ms** | 429 ms | **2.6x** | 33,493 | 58,799 |
+
+A steady 2.3-2.6x from 256 qubits up, with the diagram consistently 1.8x
+smaller. BV's diagram *must* grow linearly -- it encodes the planted secret, `n`
+incompressible bits -- and both implementations are within a constant factor of
+that bound.
 
 ### Deutsch-Jozsa
 
 | qubits | rust | c++ | ratio | rust size | c++ size |
 |--:|--:|--:|--:|--:|--:|
-| 4 | 120 us | 2 ms | 16.7x | 29 | 70 |
-| 16 | 252 us | 2 ms | 7.9x | 57 | 108 |
-| 64 | 367 us | 2 ms | 5.4x | 85 | 146 |
-| 128 | **overflow** | 2 ms | - | - | 165 |
-| 256 | **overflow** | 2 ms | - | - | 184 |
+| 8 | 0.37 ms | 1 ms | 2.7x | 43 | 91 |
+| 256 | 0.45 ms | 2 ms | 4.4x | 113 | 186 |
+| 4096 | 1.8 ms | 7 ms | 4.0x | 169 | 262 |
+| 16384 | 5.9 ms | 22 ms | 3.7x | 197 | 300 |
+| 65536 | **24 ms** | 89 ms | **3.8x** | 225 | 338 |
+
+The widest sustained margin, at a diagram that stays logarithmic on both sides.
 
 ### QFT
 
-| qubits | rust | c++ | ratio | rust size | c++ size |
-|--:|--:|--:|--:|--:|--:|
-| 4 | 270 us | <1 ms | - | 9 | 80 |
-| 8 | 1.0 ms | 2 ms | 1.9x | 29 | 644 |
-| 16 | 58 ms | 190 ms | 3.3x | **287** | **132,238** |
-| 32 | does not finish | exhausts memory (9.3 GB) | - | - | - |
+| qubits | rust (bigint) | rust (i128) | c++ | ratio | rust size | c++ size |
+|--:|--:|--:|--:|--:|--:|--:|
+| 8 | 1.2 ms | 2.4 ms | 2 ms | 1.7x | 29 | 644 |
+| 16 | **102 ms** | 66 ms | 194 ms | **1.9x** | **287** | **132,238** |
+| 32 | does not finish | does not finish | exhausts memory (9.3 GB) | - | - | - |
 
-QFT is where the two diverge most. The reference's diagram explodes -- 644
-nodes+edges at 8 qubits, 132,238 at 16, out of memory at 32 -- while this
-crate's stays at 287. Both fail at 32 qubits, for different reasons: the
-reference on memory, this crate on time.
+Medians of three seeds; QFT timings are noisy on both sides (±40% run to run at
+16 qubits), so treat the ratio as approximate. QFT is the one algorithm here
+that does *not* need arbitrary precision -- 16 qubits is far below the `i128`
+ceiling -- and it runs about 1.5x faster without it, the largest `bigint`
+overhead measured anywhere.
+
+QFT is also where the representations diverge most: the reference's diagram goes
+644 -> 132,238 nodes+edges from 8 to 16 qubits and then out of memory, while
+this crate's stays at 287. Both fail at 32 qubits -- the reference on memory,
+this crate on time.
 
 ### Matrix operations
 
@@ -103,76 +130,98 @@ and takes no size), so these are this crate only, from
 
 A Kronecker fold costs exactly two nodes per doubling. The dense random case is
 the algorithm's worst case by construction -- an unstructured matrix has nothing
-to share -- and is 3 orders of magnitude slower than the structured ones at the
-same dimension.
+to share -- and is three orders of magnitude slower than the structured ones at
+the same dimension.
+
+## Arbitrary-precision coefficients
+
+The deferred semiring counts how many products coincide, and a Hadamard layer
+over `n` qubits makes that count `2^n`. With `i128` coefficients that overflows
+at 128 qubits -- exact arithmetic refusing to be wrong rather than a blow-up in
+time or memory. The `bigint` feature swaps in [`rug::Integer`], which is what
+`boost::multiprecision::cpp_int` does for the reference.
+
+**It costs about 11%** on GHZ (median over the sizes where both builds run, 32
+to 65536 qubits: 1.11x, never worse than 1.45x), and about 1.5x on QFT, whose
+many-exit diagrams do proportionally more coefficient arithmetic. That is far
+cheaper than it sounds, because the whole point of the deferred semiring is that
+coefficient arithmetic happens once per *exit*, not once per matrix entry -- the
+work is dominated by structure, not by numbers.
+
+With `bigint` there is no qubit ceiling left, which is why the tables above run
+to 65536 on every algorithm. Without it, BV and DJ stop at 64.
+
+## Amplitudes need range, not just precision
+
+BV and DJ hit a second ceiling that has nothing to do with coefficients: with
+unnormalised Walsh gates their amplitudes run to exactly `2^n`, which leaves
+`f64`'s exponent range at about 1024 qubits. The answers came back wrong at
+1024, not slow.
+
+Every amplitude in those two algorithms is an *integer*, so this crate's
+benchmark holds them as `rug::Integer` and leaves the `2^(-(2n+1)/2)`
+normalisation symbolic. That is exact at any size -- the answer at 65536 qubits
+is `2^65536` on the nose -- and it is why the correctness column reads 1 all the
+way up. The reference reaches for 100-digit floats for the same reason; integers
+are both cheaper and exact here.
+
+GHZ keeps `f64` (its amplitudes are ±1/sqrt(2) at every size) and QFT keeps a
+double-precision complex.
 
 ## What made the difference
 
-Three changes came out of profiling this comparison; the first two are in the
-library and are why the numbers above are what they are.
+Four changes came out of profiling this comparison. The first two are in the
+library; the last two are in how the benchmark drives it.
 
 1. **Hashed value interning** (`ValueSet` in `src/gcflobdd/matmul/mod.rs`).
-   Collapsing equal exit values used a linear scan, which is quadratic in the
-   exit count -- fine for boolean work, ruinous for a Fourier-transformed state
-   with thousands of distinct amplitudes. `perf` put 97.6% of QFT in
-   `substitute`/`collapse`. Hashing values (via `MatMulValue::dedup_key`) with a
-   scan retained below 16 entries took **QFT at 16 qubits from 2,341 ms to
-   65 ms, 31x**, and left the small-exit cases unchanged.
+   Collapsing equal exit values used a linear scan, quadratic in the exit count.
+   Harmless for boolean work; ruinous for a Fourier-transformed state with
+   thousands of distinct amplitudes -- `perf` put 97.6% of a 16-qubit QFT in
+   `substitute`/`collapse`. Hashing (via `MatMulValue::dedup_key`), with a scan
+   retained below 16 entries: **QFT at 16 qubits, 2341 ms -> 65 ms, 31x**.
 
-2. **Cached identity operators** (`Ops` in `tests/quantum.rs`). Building a gate
-   at qubit `i` needs an identity for every subtree without a gate, and
-   rebuilding those towers dominated the gate-heavy algorithms: 22% of GHZ was
-   `add_gcflobdd_node`, 20% `add_return_map`. Building each level's identity
-   once took **GHZ at 256 qubits from 45.2 ms to 7.3 ms, 6.2x**.
+2. **Cached identity operators** (`Ops` in `tests/quantum.rs`). Placing a gate
+   needs an identity for every subtree without one, and rebuilding those towers
+   dominated the gate-heavy algorithms: 22% of GHZ was `add_gcflobdd_node`, 20%
+   `add_return_map`. Building each level's identity once: **GHZ at 256 qubits,
+   45.2 ms -> 7.3 ms, 6.2x**.
 
-3. **`i128` path coefficients** (`src/gcflobdd/matmul/map.rs`). `i64` overflowed
-   at 64 qubits, which is where the deferred semiring's coefficients reach
-   `2^n`. Widening doubled the reachable size and cost ~13% on the dense matrix
-   multiply. The reference uses `boost::multiprecision::cpp_int` here, which is
-   why it keeps going to 256.
+3. **Sorted gate slices** (`place`). Filtering the whole gate list at every tree
+   node is `O(n^2)` for a full `n`-qubit layer -- fine at 256 qubits, hopeless
+   at 65536. Splitting a sorted slice at each level makes it `O(n log n)`.
+
+4. **Folding uniform layers by doubling** (`uniform`). A Hadamard layer has `n`
+   identical factors, so it is `log n` squarings, not `n` placements. This is
+   what the reference's `KroneckerPower` does. **DJ at 4096 qubits, 10.3 ms ->
+   1.7 ms, 6.1x**; it turned DJ at 65536 from a 1.8x loss into a 3.8x win.
 
 ## Caveats
 
 These matter for reading the numbers honestly.
 
-- **The C++ timer has millisecond granularity.** Every reference figure below
-  ~5 ms is a rounded 1-4 ms, so the small-size ratios (the 22x and 16x rows) are
-  real but imprecise. This crate reports microseconds (`durationUs`).
+- **The C++ timer has millisecond granularity**, so its figures below ~5 ms are
+  rounded 1-4 ms and the small-size ratios are real but imprecise. This crate
+  reports microseconds (`durationUs`). The large-size rows, where both are tens
+  of milliseconds or more, are the trustworthy ones.
 - **The circuits are not identical.** GHZ here is the textbook circuit -- H then
   a CNOT chain over `n` qubits, applied gate by gate; the reference multiplies
   `n` CNOT matrices together over a `2n`-qubit register and applies the product.
-  Same state, different work, and the reason the GHZ ratio decays to 1.0x.
-  BV and DJ *do* follow the reference's structure, including building the oracle
-  outside the timed region, as it does.
-- **The value types differ.** `f64` and a hand-rolled `C64` here;
-  `cpp_dec_float` and `cpp_complex_100` there. That favours this crate on
-  arithmetic. It is a small part of the profile -- CFLOBDD defers arithmetic to
-  the top node -- and it does not explain the QFT diagram-size gap, which is
-  structural. But at 256 qubits the reference is carrying 100-digit floats and
-  this crate is not.
+  Same state, different work. BV and DJ *do* follow the reference's structure,
+  including building the oracle outside the timed region, as it does -- which is
+  why their wall-clock (4.3-4.7 s at 65536 qubits) far exceeds the timed region.
 - **A state stays a vector here.** `mk_matvec` keeps a state at `n` variables;
   the reference pads it into a `2n`-variable matrix and uses matrix multiply.
-  That is a genuine advantage of this crate's API, not a measurement artifact,
-  but it is doing less work per gate as a result.
+  That is a real advantage of this crate's API, not a measurement artifact, but
+  it does mean less work per gate.
+- **Value types differ.** Exact integers (BV, DJ), `f64` (GHZ) and a hand-rolled
+  double-precision complex (QFT) here; `cpp_dec_float` and `cpp_complex_100`
+  there. The reference is carrying 100-digit floats where this crate carries
+  machine words or exact integers. It is a small part of either profile --
+  CFLOBDD defers arithmetic to the top node -- and it does not explain the QFT
+  diagram-size gap, which is structural.
 - **The reference's QFT is unchecked.** Its harness prints no correctness line
   for QFT (`correct=na`). This crate's QFT is verified against
   `exp(2 pi i s k / 2^n) / sqrt(2^n)` at every size run.
 - **One reference harness bug was hit**: `testBVAlgo` samples until it draws a
   non-zero string, so a seed whose secret is all zeros never terminates (seed 3
   at 2 qubits, 120 s timeout). BV rows use seed 1.
-
-## The scaling limit
-
-Bernstein-Vazirani and Deutsch-Jozsa panic with `matmul coefficient overflow`
-at 128 qubits. This is not a blow-up in time or memory -- it is exact
-arithmetic refusing to be wrong.
-
-The deferred semiring records how many products coincide, and a Hadamard layer
-over `n` qubits makes that count `2^n`: `2^127` is the last one an `i128`
-holds. The reference sidesteps this with `cpp_int`, at the cost of a heap
-allocation per coefficient.
-
-Closing that gap means a coefficient type that starts small and promotes to a
-bignum on overflow. That would extend BV/DJ to any size at a small cost on
-everything else -- the natural next step, and the one thing keeping this from
-being a clean sweep.

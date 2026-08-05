@@ -70,6 +70,7 @@
 //! operands shared rather than copied, however large they are. The same holds
 //! for the tensor product of two vectors.
 
+pub mod coefficient;
 mod map;
 pub(in crate::gcflobdd) mod node;
 #[cfg(test)]
@@ -81,6 +82,7 @@ use std::rc::Rc;
 use crate::gcflobdd::GcflobddT;
 use crate::gcflobdd::connection::{Connection, ConnectionPair, ConnectionT};
 use crate::gcflobdd::context::Context;
+pub use crate::gcflobdd::matmul::coefficient::Coefficient;
 use crate::gcflobdd::matmul::node::{Valued, kron_node, matmul_node, matvec_node, split};
 use crate::gcflobdd::node::{GcflobddNode, GcflobddNodeType, InternalNode};
 use crate::grammar::{Grammar, GrammarNode, GrammarNodeType};
@@ -99,7 +101,8 @@ pub trait MatMulValue: Clone + PartialEq {
     fn add(&self, rhs: &Self) -> Self;
     fn mul(&self, rhs: &Self) -> Self;
     /// `coeff * self`, where `coeff` counts how many times a product occurs.
-    fn scale(&self, coeff: i128) -> Self;
+    /// See [`Coefficient`] for how wide that count can get.
+    fn scale(&self, coeff: &Coefficient) -> Self;
 
     /// A hashable stand-in for this value, if one exists.
     ///
@@ -147,9 +150,12 @@ macro_rules! integer_matmul_value {
                 self * rhs
             }
             #[inline]
-            fn scale(&self, coeff: i128) -> Self {
-                <$t>::try_from(coeff).expect("matmul: coefficient does not fit the value type")
-                    * self
+            fn scale(&self, coeff: &Coefficient) -> Self {
+                let coeff = coeff
+                    .to_i128()
+                    .and_then(|c| <$t>::try_from(c).ok())
+                    .expect("matmul: coefficient does not fit the value type");
+                coeff * self
             }
             #[inline]
             fn dedup_key(&self) -> Option<u128> {
@@ -176,8 +182,8 @@ impl MatMulValue for f64 {
         self * rhs
     }
     #[inline]
-    fn scale(&self, coeff: i128) -> Self {
-        self * coeff as f64
+    fn scale(&self, coeff: &Coefficient) -> Self {
+        self * coeff.to_f64()
     }
     #[inline]
     fn dedup_key(&self) -> Option<u128> {
@@ -196,8 +202,8 @@ impl MatMulValue for rug::Complex {
     fn mul(&self, rhs: &Self) -> Self {
         rug::Complex::with_val(self.prec(), self * rhs)
     }
-    fn scale(&self, coeff: i128) -> Self {
-        rug::Complex::with_val(self.prec(), self * rug::Integer::from(coeff))
+    fn scale(&self, coeff: &Coefficient) -> Self {
+        rug::Complex::with_val(self.prec(), self * coeff.to_rug())
     }
 }
 

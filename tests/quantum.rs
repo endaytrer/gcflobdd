@@ -12,7 +12,7 @@
 
 use gcflobdd::gcflobdd::GcflobddT;
 use gcflobdd::gcflobdd::context::Context;
-use gcflobdd::gcflobdd::matmul::MatMulValue;
+use gcflobdd::gcflobdd::matmul::{Coefficient, MatMulValue};
 use gcflobdd::grammar::Grammar;
 use std::cell::RefCell;
 use std::time::Instant;
@@ -22,9 +22,12 @@ use std::time::Instant;
 // ---------------------------------------------------------------------------
 
 /// What the algorithms need of an amplitude type beyond [`MatMulValue`].
-trait Amplitude: MatMulValue + Copy + std::fmt::Debug {
-    const ZERO: Self;
-    const ONE: Self;
+///
+/// `zero`/`one` are functions rather than constants, and the type need not be
+/// `Copy`, so that an arbitrary-precision amplitude qualifies.
+trait Amplitude: MatMulValue + std::fmt::Debug {
+    fn zero() -> Self;
+    fn one() -> Self;
     fn of(x: f64) -> Self;
     /// `e^(i * theta)`.
     fn phase(theta: f64) -> Self;
@@ -32,8 +35,12 @@ trait Amplitude: MatMulValue + Copy + std::fmt::Debug {
 }
 
 impl Amplitude for f64 {
-    const ZERO: Self = 0.0;
-    const ONE: Self = 1.0;
+    fn zero() -> Self {
+        0.0
+    }
+    fn one() -> Self {
+        1.0
+    }
     fn of(x: f64) -> Self {
         x
     }
@@ -77,8 +84,9 @@ impl MatMulValue for C64 {
             self.re * rhs.im + self.im * rhs.re,
         )
     }
-    fn scale(&self, coeff: i128) -> Self {
-        Self::new(self.re * coeff as f64, self.im * coeff as f64)
+    fn scale(&self, coeff: &Coefficient) -> Self {
+        let coeff = coeff.to_f64();
+        Self::new(self.re * coeff, self.im * coeff)
     }
     fn dedup_key(&self) -> Option<u128> {
         // Both halves' bit patterns, with -0.0 and NaN handled as for f64.
@@ -96,8 +104,12 @@ impl MatMulValue for C64 {
 }
 
 impl Amplitude for C64 {
-    const ZERO: Self = Self::new(0.0, 0.0);
-    const ONE: Self = Self::new(1.0, 0.0);
+    fn zero() -> Self {
+        Self::new(0.0, 0.0)
+    }
+    fn one() -> Self {
+        Self::new(1.0, 0.0)
+    }
     fn of(x: f64) -> Self {
         Self::new(x, 0.0)
     }
@@ -106,6 +118,68 @@ impl Amplitude for C64 {
     }
     fn magnitude(&self) -> f64 {
         self.re.hypot(self.im)
+    }
+}
+
+/// An exact integer amplitude, of unbounded size.
+///
+/// With unnormalised Walsh gates every amplitude in Bernstein-Vazirani and
+/// Deutsch-Jozsa is an integer, running up to `2^n` for `n` qubits -- past
+/// `f64`'s range at about 1024 qubits, which is why the reference
+/// implementation carries 100-digit floats. Holding them as integers instead
+/// is both exact and unbounded: the answer at 65536 qubits is `2^65536` on the
+/// nose, and the `2^(-(2n+1)/2)` normalisation is left symbolic.
+#[derive(Clone, Debug, PartialEq)]
+struct Int(rug::Integer);
+
+impl Int {
+    fn of_i64(value: i64) -> Self {
+        Self(rug::Integer::from(value))
+    }
+    /// `2^exponent`, the amplitude these algorithms concentrate on.
+    fn power_of_two(exponent: u32) -> Self {
+        Self(rug::Integer::from(1) << exponent)
+    }
+}
+
+impl MatMulValue for Int {
+    fn zero_like(_sample: &Self) -> Self {
+        Self::of_i64(0)
+    }
+    fn add(&self, rhs: &Self) -> Self {
+        Self(rug::Integer::from(&self.0 + &rhs.0))
+    }
+    fn mul(&self, rhs: &Self) -> Self {
+        Self(rug::Integer::from(&self.0 * &rhs.0))
+    }
+    fn scale(&self, coeff: &Coefficient) -> Self {
+        Self(&self.0 * coeff.to_rug())
+    }
+    // No `dedup_key`: an arbitrary integer does not fit one, and these states
+    // hold only a handful of distinct amplitudes, so the scan is fine.
+}
+
+impl Amplitude for Int {
+    fn zero() -> Self {
+        Self::of_i64(0)
+    }
+    fn one() -> Self {
+        Self::of_i64(1)
+    }
+    fn of(x: f64) -> Self {
+        debug_assert_eq!(x, x.trunc(), "an integer amplitude cannot hold {x}");
+        Self::of_i64(x as i64)
+    }
+    fn phase(theta: f64) -> Self {
+        let value = theta.cos();
+        assert!(
+            theta.sin().abs() < 1e-12 && value.abs() == 1.0,
+            "an integer amplitude cannot hold the phase e^(i{theta})"
+        );
+        Self::of(value)
+    }
+    fn magnitude(&self) -> f64 {
+        self.0.to_f64().abs()
     }
 }
 
@@ -142,28 +216,31 @@ impl Levels {
 /// A 2x2 gate, row-major.
 type Gate<T> = [T; 4];
 
-fn rows<T: Copy>(gate: &Gate<T>) -> Vec<Vec<T>> {
-    vec![vec![gate[0], gate[1]], vec![gate[2], gate[3]]]
+fn rows<T: Clone>(gate: &Gate<T>) -> Vec<Vec<T>> {
+    vec![
+        vec![gate[0].clone(), gate[1].clone()],
+        vec![gate[2].clone(), gate[3].clone()],
+    ]
 }
 
 /// Unnormalised Hadamard; the `2^(-n/2)` is applied once, at the end.
 fn walsh<T: Amplitude>() -> Gate<T> {
-    [T::ONE, T::ONE, T::ONE, T::of(-1.0)]
+    [T::one(), T::one(), T::one(), T::of(-1.0)]
 }
 fn pauli_x<T: Amplitude>() -> Gate<T> {
-    [T::ZERO, T::ONE, T::ONE, T::ZERO]
+    [T::zero(), T::one(), T::one(), T::zero()]
 }
 /// `|0><0|` or `|1><1|`.
 fn projector<T: Amplitude>(bit: usize) -> Gate<T> {
     outer(bit, bit)
 }
 fn phase_gate<T: Amplitude>(theta: f64) -> Gate<T> {
-    [T::ONE, T::ZERO, T::ZERO, T::phase(theta)]
+    [T::one(), T::zero(), T::zero(), T::phase(theta)]
 }
 /// `|row><col|`.
 fn outer<T: Amplitude>(row: usize, col: usize) -> Gate<T> {
-    let mut gate = [T::ZERO; 4];
-    gate[2 * row + col] = T::ONE;
+    let mut gate = [T::zero(), T::zero(), T::zero(), T::zero()];
+    gate[2 * row + col] = T::one();
     gate
 }
 
@@ -180,7 +257,7 @@ struct Ops<'g, T> {
 impl<'g, T: Amplitude> Ops<'g, T> {
     fn new(levels: &'g Levels, context: &RefCell<Context<'g>>) -> Self {
         let identity = (0..levels.matrix.len())
-            .map(|k| GcflobddT::mk_identity(T::ONE, T::ZERO, &levels.matrix[k], context))
+            .map(|k| GcflobddT::mk_identity(T::one(), T::zero(), &levels.matrix[k], context))
             .collect();
         Self { levels, identity }
     }
@@ -189,8 +266,10 @@ impl<'g, T: Amplitude> Ops<'g, T> {
 /// The operator that applies `gates` at their qubit positions and the identity
 /// everywhere else, over the `2^k`-qubit block starting at `offset`.
 ///
-/// Subtrees holding no gate are the cached identity outright, so the cost is
-/// `O(gates * k)` rather than `O(2^k)`.
+/// `gates` must be sorted by qubit and already restricted to that block; each
+/// level splits it at the midpoint rather than re-scanning it, so a full
+/// n-qubit layer costs `O(n log n)` and not `O(n^2)`. Subtrees holding no gate
+/// are the cached identity outright.
 fn place<'g, T: Amplitude>(
     ops: &Ops<'g, T>,
     k: usize,
@@ -198,21 +277,40 @@ fn place<'g, T: Amplitude>(
     gates: &[(usize, Gate<T>)],
     context: &RefCell<Context<'g>>,
 ) -> GcflobddT<'g, T> {
-    let span = 1usize << k;
-    let mut here = gates
-        .iter()
-        .filter(|(qubit, _)| *qubit >= offset && *qubit < offset + span);
-    let Some(first) = here.next() else {
+    debug_assert!(
+        gates.windows(2).all(|w| w[0].0 <= w[1].0),
+        "gates must be sorted"
+    );
+    let Some(first) = gates.first() else {
         return ops.identity[k].clone();
     };
     if k == 0 {
-        debug_assert!(here.next().is_none());
+        debug_assert_eq!(gates.len(), 1);
         return GcflobddT::from_matrix(&rows(&first.1), &ops.levels.matrix[0], context);
     }
-    let half = span >> 1;
-    let low = place(ops, k - 1, offset, gates, context);
-    let high = place(ops, k - 1, offset + half, gates, context);
+    let half = 1usize << (k - 1);
+    let mid = gates.partition_point(|(qubit, _)| *qubit < offset + half);
+    let low = place(ops, k - 1, offset, &gates[..mid], context);
+    let high = place(ops, k - 1, offset + half, &gates[mid..], context);
     low.mk_kron(&high, &ops.levels.matrix[k], context)
+}
+
+/// The same gate on every qubit of a `2^k` block, folded by doubling.
+///
+/// `O(k)` rather than the `O(2^k log 2^k)` that placing each qubit's gate
+/// separately would cost -- every factor is identical, so each level is the
+/// previous one squared. A full Hadamard layer is the reason this matters.
+fn uniform<'g, T: Amplitude>(
+    ops: &Ops<'g, T>,
+    k: usize,
+    gate: &Gate<T>,
+    context: &RefCell<Context<'g>>,
+) -> GcflobddT<'g, T> {
+    let mut operator = GcflobddT::from_matrix(&rows(gate), &ops.levels.matrix[0], context);
+    for level in 1..=k {
+        operator = operator.mk_kron(&operator, &ops.levels.matrix[level], context);
+    }
+    operator
 }
 
 /// `|0><0|_c (x) I  +  |1><1|_c (x) U_t`: the standard controlled gate, and the
@@ -226,13 +324,9 @@ fn controlled<'g, T: Amplitude>(
     context: &RefCell<Context<'g>>,
 ) -> GcflobddT<'g, T> {
     let off = place(ops, k, 0, &[(control, projector::<T>(0))], context);
-    let on = place(
-        ops,
-        k,
-        0,
-        &[(control, projector::<T>(1)), (target, gate)],
-        context,
-    );
+    let mut on_gates = [(control, projector::<T>(1)), (target, gate)];
+    on_gates.sort_by_key(|(qubit, _)| *qubit);
+    let on = place(ops, k, 0, &on_gates, context);
     off.mk_matadd(&on, context)
 }
 
@@ -243,6 +337,7 @@ fn swap<'g, T: Amplitude>(
     j: usize,
     context: &RefCell<Context<'g>>,
 ) -> GcflobddT<'g, T> {
+    let (i, j) = (i.min(j), i.max(j));
     let terms = [
         [(i, outer::<T>(0, 0)), (j, outer::<T>(0, 0))],
         [(i, outer::<T>(0, 1)), (j, outer::<T>(1, 0))],
@@ -352,12 +447,12 @@ fn bernstein_vazirani(p: usize, seed: u64) {
     let ops = Ops::new(&levels, &context);
     // U_f: |x>|y> -> |x>|y xor (a.x)>, a chain of CNOTs onto the ancilla.
     let oracle = {
-        let mut oracle: Option<GcflobddT<f64>> = None;
+        let mut oracle: Option<GcflobddT<Int>> = None;
         for (i, bit) in secret.iter().enumerate() {
             if !bit {
                 continue;
             }
-            let cnot = controlled(&ops, p + 1, i, ancilla, pauli_x::<f64>(), &context);
+            let cnot = controlled(&ops, p + 1, i, ancilla, pauli_x::<Int>(), &context);
             oracle = Some(match oracle {
                 None => cnot,
                 Some(previous) => previous.mk_matmul(&cnot, &context),
@@ -367,32 +462,38 @@ fn bernstein_vazirani(p: usize, seed: u64) {
     };
 
     let start = Instant::now();
-    let mut state = GcflobddT::mk_basis_vector(0, 1.0f64, 0.0, &levels.vector[p + 1], &context);
+    let mut state =
+        GcflobddT::mk_basis_vector(0, Int::one(), Int::zero(), &levels.vector[p + 1], &context);
     // Ancilla to |1>, then Walsh on the data qubits and the ancilla.
-    let flip = place(&ops, p + 1, 0, &[(ancilla, pauli_x::<f64>())], &context);
+    let flip = place(&ops, p + 1, 0, &[(ancilla, pauli_x::<Int>())], &context);
     state = flip.mk_matvec(&state, &context);
-    let layer: Vec<_> = (0..=n).map(|q| (q, walsh::<f64>())).collect();
-    let hadamard = place(&ops, p + 1, 0, &layer, &context);
+    // H on the n data qubits and on the ancilla. The data half is uniform, so
+    // it folds by doubling; only the ancilla needs placing.
+    let data_layer = uniform(&ops, p, &walsh::<Int>(), &context);
+    let ancilla_layer = place(&ops, p, n, &[(ancilla, walsh::<Int>())], &context);
+    let hadamard = data_layer.mk_kron(&ancilla_layer, &levels.matrix[p + 1], &context);
     state = hadamard.mk_matvec(&state, &context);
     if let Some(oracle) = &oracle {
         state = oracle.mk_matvec(&state, &context);
     }
-    let data_layer: Vec<_> = (0..n).map(|q| (q, walsh::<f64>())).collect();
-    let hadamard = place(&ops, p + 1, 0, &data_layer, &context);
+    // H on the data qubits only; the ancilla is left alone.
+    let hadamard = uniform(&ops, p, &walsh::<Int>(), &context).mk_kron(
+        &ops.identity[p],
+        &levels.matrix[p + 1],
+        &context,
+    );
     state = hadamard.mk_matvec(&state, &context);
-    // One Walsh layer over n+1 qubits and one over n, so 2^(-(2n+1)/2)
-    // altogether -- a half-integer power, hence powf.
-    state = state.mk_scale(&2f64.powf(-(2.0 * n as f64 + 1.0) / 2.0), &context);
     let duration = start.elapsed();
 
-    // The data register now holds the secret, the ancilla is |->.
+    // Unnormalised, the data register holds the secret with amplitude exactly
+    // 2^n and every other string exactly 0; the 2^(-(2n+1)/2) that would make
+    // this a unit vector stays symbolic, since it is not an integer.
     let mut expected = secret.clone();
     expected.resize(2 * n, false);
-    let amplitude = state.evaluate(&expected);
     let mut other = expected.clone();
     other[0] = !other[0];
-    let correct = close(amplitude.abs(), std::f64::consts::FRAC_1_SQRT_2)
-        && close(state.evaluate(&other), 0.0);
+    let correct = state.evaluate(&expected) == Int::power_of_two(n as u32)
+        && state.evaluate(&other) == Int::zero();
 
     println!("equal: {}", correct as u8);
     report(duration, &state, &context);
@@ -414,9 +515,9 @@ fn deutsch_jozsa(p: usize, seed: u64) {
     // Balanced: f(x) = x_0 xor ... xor x_{n-1}, i.e. a CNOT from every qubit.
     // Constant: f(x) = 0, i.e. no oracle at all.
     let oracle = if balanced {
-        let mut oracle: Option<GcflobddT<f64>> = None;
+        let mut oracle: Option<GcflobddT<Int>> = None;
         for i in 0..n {
-            let cnot = controlled(&ops, p + 1, i, ancilla, pauli_x::<f64>(), &context);
+            let cnot = controlled(&ops, p + 1, i, ancilla, pauli_x::<Int>(), &context);
             oracle = Some(match oracle {
                 None => cnot,
                 Some(previous) => previous.mk_matmul(&cnot, &context),
@@ -428,28 +529,36 @@ fn deutsch_jozsa(p: usize, seed: u64) {
     };
 
     let start = Instant::now();
-    let mut state = GcflobddT::mk_basis_vector(0, 1.0f64, 0.0, &levels.vector[p + 1], &context);
-    let flip = place(&ops, p + 1, 0, &[(ancilla, pauli_x::<f64>())], &context);
+    let mut state =
+        GcflobddT::mk_basis_vector(0, Int::one(), Int::zero(), &levels.vector[p + 1], &context);
+    let flip = place(&ops, p + 1, 0, &[(ancilla, pauli_x::<Int>())], &context);
     state = flip.mk_matvec(&state, &context);
-    let layer: Vec<_> = (0..=n).map(|q| (q, walsh::<f64>())).collect();
-    let hadamard = place(&ops, p + 1, 0, &layer, &context);
+    // H on the n data qubits and on the ancilla. The data half is uniform, so
+    // it folds by doubling; only the ancilla needs placing.
+    let data_layer = uniform(&ops, p, &walsh::<Int>(), &context);
+    let ancilla_layer = place(&ops, p, n, &[(ancilla, walsh::<Int>())], &context);
+    let hadamard = data_layer.mk_kron(&ancilla_layer, &levels.matrix[p + 1], &context);
     state = hadamard.mk_matvec(&state, &context);
     if let Some(oracle) = &oracle {
         state = oracle.mk_matvec(&state, &context);
     }
-    let data_layer: Vec<_> = (0..n).map(|q| (q, walsh::<f64>())).collect();
-    let hadamard = place(&ops, p + 1, 0, &data_layer, &context);
+    // H on the data qubits only; the ancilla is left alone.
+    let hadamard = uniform(&ops, p, &walsh::<Int>(), &context).mk_kron(
+        &ops.identity[p],
+        &levels.matrix[p + 1],
+        &context,
+    );
     state = hadamard.mk_matvec(&state, &context);
-    state = state.mk_scale(&2f64.powf(-(2.0 * n as f64 + 1.0) / 2.0), &context);
     let duration = start.elapsed();
 
-    // Constant: all the amplitude sits on |0...0>. Balanced: none of it does.
+    // Constant: all the amplitude sits on |0...0>, exactly 2^n unnormalised.
+    // Balanced: none of it does, exactly 0.
     let zeros = vec![false; 2 * n];
-    let amplitude = state.evaluate(&zeros).abs();
+    let amplitude = state.evaluate(&zeros);
     let correct = if balanced {
-        close(amplitude, 0.0)
+        amplitude == Int::zero()
     } else {
-        close(amplitude, std::f64::consts::FRAC_1_SQRT_2)
+        amplitude == Int::power_of_two(n as u32)
     };
 
     println!("is_correct: {}", correct as u8);
@@ -473,7 +582,7 @@ fn qft(p: usize, seed: u64) {
     let mut state = {
         // |input>, built from its bits: a basis vector one qubit at a time.
         let mut state =
-            GcflobddT::mk_basis_vector(0, C64::ONE, C64::ZERO, &levels.vector[p], &context);
+            GcflobddT::mk_basis_vector(0, C64::one(), C64::zero(), &levels.vector[p], &context);
         let flips: Vec<_> = index
             .iter()
             .enumerate()
