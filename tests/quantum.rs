@@ -821,7 +821,38 @@ fn bit_string(bits: &[bool]) -> String {
     bits.iter().map(|b| if *b { '1' } else { '0' }).collect()
 }
 
-fn grover<T: Amplitude>(p: usize, seed: u64, exponentiate: bool) -> bool {
+/// How much of the result to check, which is what sets the size ceiling.
+///
+/// The checks themselves cost almost nothing -- two `evaluate`s and some scalar
+/// arithmetic against a diagram the simulation already built -- so weakening
+/// one buys no speed. What it buys is *reach*, because each check needs its own
+/// values to be representable:
+///
+/// - [`Theory`](Check::Theory) compares the whole state against
+///   `sin((2k+1)theta)` and `cos((2k+1)theta)/sqrt(N-1)` in `f64`, so it stops
+///   at 2046 qubits, where `N = 2^n` becomes infinite;
+/// - [`Answer`](Check::Answer) only decodes the peak amplitude, which stays
+///   near 1 at any size;
+/// - [`None`](Check::None) builds the state and stops.
+#[derive(Clone, Copy, PartialEq)]
+enum Check {
+    Theory,
+    Answer,
+    None,
+}
+
+impl Check {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "theory" | "full" => Some(Self::Theory),
+            "answer" => Some(Self::Answer),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+
+fn grover<T: Amplitude>(p: usize, seed: u64, exponentiate: bool, check: Check) -> bool {
     let n = 1usize << p;
     let levels = Levels::new(p);
     let context = RefCell::new(Context::default());
@@ -857,10 +888,12 @@ fn grover<T: Amplitude>(p: usize, seed: u64, exponentiate: bool) -> bool {
 
     let operator = diffusion.mk_matmul(&oracle, &context);
 
-    // |s>: the uniform superposition, every amplitude 1/sqrt(N).
+    // |s>: the uniform superposition, every amplitude 1/sqrt(N). Compared
+    // against the type's own zero rather than through `magnitude`, whose `f64`
+    // would call 2^-2048 an underflow when a wide float holds it exactly.
     let initial = T::power_of_two(-(n as i32) / 2);
     assert!(
-        initial.magnitude() > 0.0,
+        initial != T::zero_like(&initial),
         "2^(-{n}/2) underflows this amplitude type"
     );
     let mut state = GcflobddT::mk_constant(initial, &levels.vector[p], &context);
@@ -875,64 +908,93 @@ fn grover<T: Amplitude>(p: usize, seed: u64, exponentiate: bool) -> bool {
             state = operator.mk_matvec(&state, &context);
         }
     }
-    let answer = peak(&state);
+    let answer = (check != Check::None).then(|| peak(&state));
     let duration = start.elapsed();
+
+    let correct = match &answer {
+        None => {
+            println!("equal: na");
+            false
+        }
+        Some(answer) => {
+            let correct = *answer == secret;
+            // The strings are `n` characters each, so print them only while
+            // that is readable; the flag is what the harness parses anyway.
+            if n <= 1024 {
+                println!("s: {} ans_s: {}", bit_string(&secret), bit_string(answer));
+            }
+            println!("equal: {}", correct as u8);
+            correct
+        }
+    };
 
     // After k iterations the marked amplitude is exactly sin((2k+1)theta) and
     // every other one cos((2k+1)theta)/sqrt(N-1), with theta = asin(1/sqrt(N)).
     // Checking both pins down the whole state, since it holds only those two
     // values -- far stronger than checking that one sample came back right.
-    let root_n = 2f64.powi((n / 2) as i32);
-    // Past 2046 qubits `N = 2^n` is f64's infinity and the expected unmarked
-    // amplitude underflows to zero, which would make the second half of the
-    // check below compare 0 against 0 and pass for any state at all. Refuse
-    // rather than claim a verification that is not happening: what this needs
-    // is a wide float in the checker, not in the simulation.
-    assert!(
-        root_n.is_finite(),
-        "the theory check is f64 arithmetic and cannot reach {n} qubits"
-    );
-    let angle = (2.0 * iterations.to_f64() + 1.0) * (1.0 / root_n).asin();
-    // sqrt(N - 1), written so that it neither overflows at 1024 qubits (where
-    // N = 2^1024 is f64's infinity) nor rounds to sqrt(N) at 4, where the
-    // difference between sqrt(15) and 4 is 3%.
-    let root_n_minus_one = root_n * (1.0 - 2f64.powi(-(n as i32))).sqrt();
-    let mut unmarked = secret.clone();
-    unmarked[0] = !unmarked[0];
-    let near = |actual: f64, expected: f64| (actual - expected).abs() <= 1e-6;
-    let marked_amplitude = state.evaluate(&secret).magnitude();
-    let matches_theory = near(marked_amplitude, angle.sin().abs())
-        && near(
-            state.evaluate(&unmarked).magnitude(),
-            (angle.cos() / root_n_minus_one).abs(),
+    let matches_theory = if check == Check::Theory {
+        let root_n = 2f64.powi((n / 2) as i32);
+        // Past 2046 qubits `N = 2^n` is f64's infinity and the expected
+        // unmarked amplitude underflows to zero, which would make the second
+        // half of the check below compare 0 against 0 and pass for any state at
+        // all. Refuse rather than claim a verification that is not happening:
+        // what this needs is a wide float in the checker, not in the
+        // simulation. Larger sizes have to drop to `Check::Answer`.
+        assert!(
+            root_n.is_finite(),
+            "the theory check is f64 arithmetic and cannot reach {n} qubits; \
+             pass `answer` or `none` as the check argument"
         );
-
-    let correct = answer == secret;
-    println!("s: {} ans_s: {}", bit_string(&secret), bit_string(&answer));
-    println!("equal: {}", correct as u8);
-    println!(
-        "probability: {:.6e} theory: {:.6e} matches theory: {}",
-        marked_amplitude * marked_amplitude,
-        angle.sin().powi(2),
-        matches_theory as u8
-    );
+        let angle = (2.0 * iterations.to_f64() + 1.0) * (1.0 / root_n).asin();
+        // sqrt(N - 1), written so that it neither overflows at 1024 qubits
+        // (where N = 2^1024 is f64's infinity) nor rounds to sqrt(N) at 4,
+        // where the difference between sqrt(15) and 4 is 3%.
+        let root_n_minus_one = root_n * (1.0 - 2f64.powi(-(n as i32))).sqrt();
+        let mut unmarked = secret.clone();
+        unmarked[0] = !unmarked[0];
+        let near = |actual: f64, expected: f64| (actual - expected).abs() <= 1e-6;
+        let marked_amplitude = state.evaluate(&secret).magnitude();
+        let matches = near(marked_amplitude, angle.sin().abs())
+            && near(
+                state.evaluate(&unmarked).magnitude(),
+                (angle.cos() / root_n_minus_one).abs(),
+            );
+        println!(
+            "probability: {:.6e} theory: {:.6e} matches theory: {}",
+            marked_amplitude * marked_amplitude,
+            angle.sin().powi(2),
+            matches as u8
+        );
+        matches
+    } else {
+        // Nothing was verified, so say so rather than print a flag that would
+        // be read as a pass.
+        println!("matches theory: na");
+        false
+    };
     report(duration, &state, &context);
-    // The answer alone is not enough: a state that was only partly amplified
-    // still peaks on the marked string, which is exactly how the reference's
-    // Grover -- and this one in `f64` past 108 qubits -- reads correct while
-    // being wrong.
-    correct && matches_theory
+    // Whether the checks that ran passed. Under `Theory` the answer alone is
+    // not enough: a state that was only partly amplified still peaks on the
+    // marked string, which is exactly how the reference's Grover -- and this
+    // one in `f64` past 108 qubits -- reads correct while being wrong.
+    match check {
+        Check::Theory => correct && matches_theory,
+        Check::Answer => correct,
+        Check::None => true,
+    }
 }
 
 // ---------------------------------------------------------------------------
 
 fn usage(program: &str) -> ! {
     eprintln!(
-        "usage: {program} <test> <p> [seed]\n\
+        "usage: {program} <test> <p> [seed] [check]\n\
          tests: testGHZAlgo | testBVAlgo | testDJAlgo | testQFT | testGroversAlgo\n\
          \x20      | testGroversAlgoFast | testGroversAlgoBig\n\
          \x20      (ghz | bv | dj | qft | grover | grover-fast | grover-big)\n\
-         qubit count is n = 2^p, matching the reference CFLOBDD harness"
+         qubit count is n = 2^p, matching the reference CFLOBDD harness\n\
+         check: theory (default) | answer | none -- Grover only; `theory` is\n\
+         \x20      f64 arithmetic and stops at 2046 qubits"
     );
     std::process::exit(2)
 }
@@ -955,16 +1017,16 @@ fn smoke() {
         assert!(deutsch_jozsa(2, seed), "DJ at 4 qubits, seed {seed}");
         assert!(qft(2, seed), "QFT at 4 qubits, seed {seed}");
         assert!(
-            grover::<f64>(2, seed, false),
+            grover::<f64>(2, seed, false, Check::Theory),
             "Grover iterated, seed {seed}"
         );
         assert!(
-            grover::<f64>(2, seed, true),
+            grover::<f64>(2, seed, true, Check::Theory),
             "Grover exponentiated, seed {seed}"
         );
         set_working_precision(grover_precision(2));
         assert!(
-            grover::<Real>(2, seed, true),
+            grover::<Real>(2, seed, true, Check::Theory),
             "Grover exponentiated in a wide float, seed {seed}"
         );
     }
@@ -981,17 +1043,21 @@ fn main() {
     }
     let p: usize = args[2].parse().unwrap_or_else(|_| usage(&args[0]));
     let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
+    let check = match args.get(4) {
+        None => Check::Theory,
+        Some(name) => Check::parse(name).unwrap_or_else(|| usage(&args[0])),
+    };
 
     match args[1].as_str() {
         "testGHZAlgo" | "ghz" => ghz(p),
         "testBVAlgo" | "bv" => bernstein_vazirani(p, seed),
         "testDJAlgo" | "dj" => deutsch_jozsa(p, seed),
         "testQFT" | "qft" => qft(p, seed),
-        "testGroversAlgo" | "grover" => grover::<f64>(p, seed, false),
-        "testGroversAlgoFast" | "grover-fast" => grover::<f64>(p, seed, true),
+        "testGroversAlgo" | "grover" => grover::<f64>(p, seed, false, check),
+        "testGroversAlgoFast" | "grover-fast" => grover::<f64>(p, seed, true, check),
         "testGroversAlgoBig" | "grover-big" => {
             set_working_precision(grover_precision(p));
-            grover::<Real>(p, seed, true)
+            grover::<Real>(p, seed, true, check)
         }
         _ => usage(&args[0]),
     };

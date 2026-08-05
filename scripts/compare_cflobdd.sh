@@ -79,9 +79,11 @@ run() {
   # peak landed on the right string -- a partially amplified state still peaks
   # correctly, which is how the reference's failure hides. `na` for everything
   # else, including every reference run.
+  # `matches theory: na` means the run was told not to verify, so leave the
+  # column at na rather than recording an empty field.
   local verified=na
-  if grep -q "matches theory: " "$tmp_out"; then
-    verified=$(grep -m1 "matches theory: " "$tmp_out" | sed -n 's/.*matches theory: \([01]\).*/\1/p')
+  if grep -q "matches theory: [01]" "$tmp_out"; then
+    verified=$(grep -m1 -o "matches theory: [01]" "$tmp_out" | awk '{print $3}')
   fi
 
   local dur= us= nodes= edges= total=

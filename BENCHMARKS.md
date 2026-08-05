@@ -27,6 +27,10 @@ LABEL=rust-bigint ONLY=rust RUST_BIN=<bigint build> PMIN=2 PMAX=10 \
   scripts/compare_cflobdd.sh grover
 ONLY=cpp PMIN=2 PMAX=6 SEEDS="1 2 3 4 5 6 7 8 9 10" APPEND=1 \
   OUT=results/grover_compare.csv scripts/compare_cflobdd.sh grover
+
+# Past 2046 qubits the theory check cannot run, so ask for a weaker one:
+#   <binary> testGroversAlgoBig <p> <seed> [theory | answer | none]
+<bigint build> testGroversAlgoBig 14 1 answer      # 16384 qubits, 2.8 s
 ```
 
 ## TL;DR
@@ -42,7 +46,8 @@ every size from 2 to **65536 qubits**. At the top of that ladder:
 | **QFT**, 16 qubits | **102 ms** | 194 ms | **1.9x** |
 | **Grover**, 32 qubits | **2.0 ms**, 10/10 right | 430 ms, **0/10 right** | 216x |
 | **Grover**, 64 qubits | **4.0 ms**, 10/10 right | 10.8 s, **0/10 right** | 2700x |
-| **Grover**, 1024 qubits | **35 ms**, 10/10 right | out of reach | |
+| **Grover**, 1024 qubits | **35 ms**, 10/10 verified | out of reach | |
+| **Grover**, 16384 qubits | **2.8 s**, answer right | out of reach | |
 | GHZ diagram, 65536 qubits | **216** | 914 | 4.2x smaller |
 | BV diagram, 65536 qubits | **33,493** | 58,799 | 1.8x smaller |
 | QFT diagram, 16 qubits | **287** | 132,238 | 461x smaller |
@@ -61,9 +66,10 @@ to stop BV and DJ at 64 qubits is gone (see *Arbitrary-precision coefficients*).
 **Grover is the exception, and it is not a speed result.** The reference's
 Grover returns wrong answers from 16 qubits up -- 0 of 10 seeds correct at 16,
 32 and 64 -- which its own repository documents and attributes to how it raises
-the Grover operator to a power. This crate's is correct at every size run, to
-**1024 qubits**, in 35 ms. The 216x and 2700x above are real but secondary: the
-comparison is between an answer and a wrong answer.
+the Grover operator to a power. This crate's is fully verified against theory at
+every size to **1024 qubits** (35 ms), and returns the right answer under a
+weaker check to **16384 qubits** (2.8 s). The 216x and 2700x above are real but
+secondary: the comparison is between an answer and a wrong answer.
 
 ## Results
 
@@ -172,14 +178,13 @@ preallocates at startup regardless of the problem. Its degradation starts before
 16 qubits, too: at 8 it already misses 3 of 10 seeds, where theory puts the
 single-shot success probability at 0.99995.
 
-**Nothing here is close to a time limit.** Cost grows about linearly in qubit
-count -- 1.9x from 512 to 1024 -- so the largest run sits 140x inside a 5 s
-budget. What stops the ladder is neither time nor the representation but the
-*checker*: verifying against theory is `f64` arithmetic, and `N = 2^n` becomes
-infinite at 2048 qubits, where the expected unmarked amplitude also underflows
-to zero. Rather than let the check quietly compare zero against zero and pass,
-`grover` asserts on it, so 2046 qubits is a hard edge with a clear message.
-Lifting it means a wide float in the verification, not in the simulation.
+**1024 qubits is the verifier's limit, not the simulation's.** Checking against
+theory is `f64` arithmetic: `N = 2^n` becomes infinite at 2048 qubits and the
+expected unmarked amplitude underflows to zero, so the check would compare zero
+against zero and pass for any state at all. Rather than claim a verification
+that is not happening, `grover` asserts on that -- 2046 qubits is a hard edge
+with a message pointing at the alternative. See *How far with a weaker check*
+below for where the simulation itself gives out, which is much later.
 
 **Correctness is checked differently on the two sides, and more strictly here.**
 The reference draws one sample from `|amplitude|^2` and asks whether it equals
@@ -200,6 +205,55 @@ barely amplified rather than mis-sampled. The `cflobdd` repository's own
 investigation reaches the same conclusion and localises it to `MultiplyRec`, its
 memoized binary-splitting exponentiation of `M`, which carries a rescaling that
 is applied on some paths and not on others.
+
+### How far with a weaker check
+
+The checks are not what costs anything -- they are two `evaluate` calls and some
+scalar arithmetic against a diagram the simulation has already finished
+building. At 1024 qubits, full theory check 33 ms, answer only 29 ms, no check
+31 ms: one measurement's worth of noise. So weakening a check buys no speed at
+all. What it buys is *reach*, because each check needs its own values to be
+representable, and `grover` takes a `check` argument saying which to run:
+
+| `check` | what it establishes | stops at |
+|---|---|--:|
+| `theory` (default) | the whole state: both amplitudes against `sin`/`cos` | 2046 qubits |
+| `answer` | the peak amplitude decodes to the planted string | - |
+| `none` | nothing; builds the state and reports its size | - |
+
+With `answer`, one seed per size:
+
+| qubits | time | peak RSS | diagram | answer |
+|--:|--:|--:|--:|---|
+| 1024 | 35 ms | 9.4 MB | 1,009 | right |
+| 2048 | 58 ms | 14 MB | 1,772 | right |
+| 4096 | 152 ms | 25 MB | 3,033 | right |
+| 8192 | 598 ms | 60 MB | 5,186 | right |
+| 16384 | **2.77 s** | 177 MB | 9,271 | right |
+| 32768 | 14.7 s | 604 MB | 17,372 | right |
+
+**16384 qubits is what fits in 5 s** -- a search over `2^16384` with an
+iteration count of about `10^2466`. Beyond that the wall is time, not
+correctness or memory: 32768 qubits still returns the right answer, in 14.7 s
+and 604 MB.
+
+The cost is superlinear and getting worse: successive doublings cost 1.6x, 2.6x,
+3.9x, 4.6x, 5.3x, i.e. an exponent climbing through 2 towards about 2.4. That is
+what you would expect from three things growing together -- the number of matrix
+multiplies is `O(n)`, the diagram they run on grows about linearly in `n`
+(1,009 nodes and edges at 1024 qubits, 17,372 at 32768), and both the amplitudes
+and the path coefficients are `n`-bit numbers.
+
+**What `answer` does not establish.** It checks the algorithm's actual output,
+so a wrong answer is caught. It does *not* check amplitude magnitudes, which
+means it would not catch a state that is only partly amplified but still peaks
+on the right string -- exactly how `f64` exponentiation fails from 128 to 512
+qubits above. Those rows would have read "right" under `answer`. What makes the
+wide-float rows above trustworthy anyway is an argument rather than a
+measurement: the mantissa is `n + 64` bits, and the requirement derived below is
+`2(b+1) > n`, which `b = n + 64` satisfies at every size by a wide margin.
+Turning that argument back into a measurement past 2046 qubits needs the
+verification arithmetic moved to a wide float too; only the simulation has been.
 
 ### Reaching M^k: iteration, squaring, and how much mantissa it takes
 
