@@ -215,37 +215,81 @@ count exactly as `MatMulMap` maps one to a `Coefficient` -- and line for line
 the two Grovers agree: same `U_w = I - 2|w><w|`, same `U_s = (2/N) J - I`, same
 `M = U_s U_w`, same `k = floor((pi/4) sqrt(N))`.
 
-**The defect is in matrix multiplication, for products where both operands are
-dense.** The repository's own `GroversSquaringCheck` shows it in two lines:
+**The defect is in matrix multiplication.** Three of the four matrices in play
+are worth naming by their *shape*, because shape is what the evidence turns on.
+At 8 qubits everything below is 256x256, `N = 256`:
+
+- `I`, the identity: one nonzero per row.
+- `U_w = I - 2|w><w|`, the oracle: the identity with a single diagonal entry
+  flipped to `-1`. Still **diagonal** -- one nonzero per row.
+- `U_s = (2/N) J - I`, the diffusion operator: `2/N` everywhere off the
+  diagonal, `2/N - 1` on it. Every one of the 65,536 entries is nonzero, so
+  `U_s` is **dense**.
+- `M = U_s U_w`, Grover's operator, which inherits that density.
+
+The repository's own `GroversSquaringCheck` multiplies seven pairs of these with
+the CFLOBDD multiply and asks whether each equals the matrix it must equal --
+these are exact algebraic identities, not approximations. `1` means it does:
 
 ```
 U_w*I == U_w: 1   U_s*I == U_s: 1   M*I == M: 1   I*M == M: 1
 U_w*U_w == I: 1   U_s*U_s == I: 0   M*U_w == U_s: 1
 ```
 
-Every product against the identity or against `U_w` -- which is diagonal, so
-each output entry is a single term and no counting arises -- is right. `U_s^2`,
-the one dense-times-dense product in that set, is wrong. And `U_s` is its own
-inverse precisely *because* `J^2 = N J`, so `(U_s^2)[x][y]` comes out right only
-if all `N` intermediate indices are counted. At 8 qubits:
+Six hold; `U_s * U_s == I` does not. That is the *only* one of the seven whose
+operands are both dense, and the reason that matters is what a matrix product
+has to compute:
+
+```
+(A B)[x][y]  =  sum over z of  A[x][z] * B[z][y]        -- N = 256 terms
+```
+
+When one operand is `I` or the diagonal `U_w`, every term but `z = y` is zero:
+each output entry is a *single* product and nothing has to be counted. That
+covers six of the seven checks. `U_s * U_s` is the one case where all 256 terms
+are nonzero and all 256 must be added -- and `U_s` is its own inverse precisely
+*because* they sum correctly (`J^2 = N J`).
+
+A CFLOBDD never materialises those 256 terms. It stores a compressed diagram in
+which many values of `z` share a path, and the multiply works out, for each pair
+of operand exits, *how many* values of `z` route to it, then multiplies the
+product of the two values by that count. So the count is exactly the thing the
+six passing checks never exercise -- there it is always 1 -- and exactly the
+thing the failing one depends on.
+
+The counts come back wrong. `U_s^2` should hold two values, `{1, 0}`; at 8
+qubits the reference returns four:
 
 ```
 U_s    {-0.992188, 0.0078125}                             exact: 2/N - 1, 2/N
 U_s^2  {0.986084, -0.013916, -0.00610352, -0.00598145}    should be {1, 0}
 ```
 
-Solving each of those for how many intermediate indices were actually summed
-gives **28, 156 and 158 in place of 256** -- integers, and different for
-different entries. That is a path-multiplicity undercount, not a rounding error:
-at 100 digits, rounding would appear around the hundredth significant figure,
-not the third.
+Take an off-diagonal entry of the square and split the sum by which `z` it runs
+through: `z = x` contributes `(2/N - 1)(2/N)`, `z = y` contributes the same, and
+each remaining `z` contributes `(2/N)^2`. Writing `m` for how many terms were
+actually summed,
 
-**Which explains the size dependence exactly.** `M = U_s U_w` inherits `U_s`'s
-density, so every matrix-times-matrix product inside `MultiplyRec`'s
-exponentiation is a dense pair, while applying `M` to a *vector* is not. The
-controlled experiment is already in that repository: `GroversAlgoHonestIter`
-differs from `GroversAlgoWithV4` only in applying `M` `k` times instead of
-squaring it. At 16 qubits, six seeds:
+```
+(U_s^2)[x][y]  =  2 (2/N)(2/N - 1)  +  (m - 2) (2/N)^2
+               =  -0.0155029296875  +  (m - 2) * 0.00006103515625
+```
+
+which is `0` exactly when `m = N = 256`. Solving instead for the values that
+came back gives **m = 28, 156 and 158** -- and `m = 28` for the diagonal. Whole
+numbers, below 256, and *different for different entries of the same product*.
+
+That is a path-multiplicity undercount and nothing else. Rounding at 100 decimal
+digits would perturb the hundredth significant figure, not the third; and no
+amount of rounding or rescaling gives one entry 28 terms and another 158.
+
+**Which explains the size dependence.** `M` is dense, so `MultiplyRec`'s
+exponentiation is a chain of dense-times-dense products -- the case just shown
+to be broken -- whereas applying `M` to the state is not: the state, padded into
+a matrix by `MkColumn1Matrix`, is zero everywhere but one column. The controlled
+experiment is already in that repository: `GroversAlgoHonestIter` differs from
+`GroversAlgoWithV4` only in applying `M` `k` times instead of squaring it. At 16
+qubits, six seeds:
 
 | | right |
 |---|--:|
@@ -255,6 +299,12 @@ squaring it. At 16 qubits, six seeds:
 Same oracle, same diffusion, same embedding, same sampler. Only the route to
 `M^k` differs. At 4 and 8 qubits, where `k` is 3 and 12, few enough squarings
 happen for the undercount to stay survivable, which is why those sizes pass.
+
+What is *not* pinned down here is the exact trigger -- which pairs of diagrams
+make the count come out wrong, and where in
+`MatrixMultiplyV4WithInfoNode`. What is pinned down is that a dense pair does,
+that products against a diagonal operand do not, and that exponentiation is the
+route built out of dense pairs while iteration is not.
 
 Two things this rules out. `MultiplyRec`'s much-suspected rescaling -- it
 returns `(1/sqrt 2) M` from some base cases while memoizing the unscaled value
