@@ -29,6 +29,10 @@ trait Amplitude: MatMulValue + std::fmt::Debug {
     fn zero() -> Self;
     fn one() -> Self;
     fn of(x: f64) -> Self;
+    /// `2^exponent`, separate from [`of`](Self::of) because these algorithms'
+    /// natural constants -- `2^n`, `2/2^n`, `1/sqrt(2^n)` -- run well past what
+    /// an `f64` literal can carry.
+    fn power_of_two(exponent: i32) -> Self;
     /// `e^(i * theta)`.
     fn phase(theta: f64) -> Self;
     fn magnitude(&self) -> f64;
@@ -43,6 +47,9 @@ impl Amplitude for f64 {
     }
     fn of(x: f64) -> Self {
         x
+    }
+    fn power_of_two(exponent: i32) -> Self {
+        2f64.powi(exponent)
     }
     fn phase(theta: f64) -> Self {
         let value = theta.cos();
@@ -113,6 +120,9 @@ impl Amplitude for C64 {
     fn of(x: f64) -> Self {
         Self::new(x, 0.0)
     }
+    fn power_of_two(exponent: i32) -> Self {
+        Self::new(2f64.powi(exponent), 0.0)
+    }
     fn phase(theta: f64) -> Self {
         Self::new(theta.cos(), theta.sin())
     }
@@ -135,10 +145,6 @@ struct Int(rug::Integer);
 impl Int {
     fn of_i64(value: i64) -> Self {
         Self(rug::Integer::from(value))
-    }
-    /// `2^exponent`, the amplitude these algorithms concentrate on.
-    fn power_of_two(exponent: u32) -> Self {
-        Self(rug::Integer::from(1) << exponent)
     }
 }
 
@@ -170,6 +176,11 @@ impl Amplitude for Int {
         debug_assert_eq!(x, x.trunc(), "an integer amplitude cannot hold {x}");
         Self::of_i64(x as i64)
     }
+    fn power_of_two(exponent: i32) -> Self {
+        let exponent =
+            u32::try_from(exponent).expect("an integer amplitude cannot hold a negative power");
+        Self(rug::Integer::from(1) << exponent)
+    }
     fn phase(theta: f64) -> Self {
         let value = theta.cos();
         assert!(
@@ -180,6 +191,91 @@ impl Amplitude for Int {
     }
     fn magnitude(&self) -> f64 {
         self.0.to_f64().abs()
+    }
+}
+
+/// A real amplitude of arbitrary precision, at [`working_precision`] bits.
+///
+/// Only Grover needs this, and only when raising its operator to a power: that
+/// operator rotates by `2 asin(2^(-n/2))` per iteration, so representing the
+/// first squarings at all takes about `n/2` bits of mantissa. Past 108 qubits
+/// `f64` rounds them to the identity and the search silently does nothing --
+/// see BENCHMARKS.md. The reference implementation reaches for
+/// `cpp_dec_float_100` throughout for the same reason.
+#[derive(Clone, Debug, PartialEq)]
+struct Real(rug::Float);
+
+static PRECISION: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(f64::MANTISSA_DIGITS);
+
+fn working_precision() -> u32 {
+    PRECISION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn set_working_precision(bits: u32) {
+    PRECISION.store(bits, std::sync::atomic::Ordering::Relaxed);
+}
+
+impl Real {
+    fn of_f64(value: f64) -> Self {
+        Self(rug::Float::with_val(working_precision(), value))
+    }
+    /// The precision to carry a result of combining these two, which is the
+    /// wider of the pair -- exactly as MPFR's own binary operators choose.
+    fn joint_precision(&self, rhs: &Self) -> u32 {
+        self.0.prec().max(rhs.0.prec())
+    }
+}
+
+impl MatMulValue for Real {
+    fn zero_like(sample: &Self) -> Self {
+        Self(rug::Float::with_val(sample.0.prec(), 0))
+    }
+    fn add(&self, rhs: &Self) -> Self {
+        Self(rug::Float::with_val(
+            self.joint_precision(rhs),
+            &self.0 + &rhs.0,
+        ))
+    }
+    fn mul(&self, rhs: &Self) -> Self {
+        Self(rug::Float::with_val(
+            self.joint_precision(rhs),
+            &self.0 * &rhs.0,
+        ))
+    }
+    fn scale(&self, coeff: &Coefficient) -> Self {
+        Self(rug::Float::with_val(
+            self.0.prec(),
+            &self.0 * coeff.to_rug(),
+        ))
+    }
+    // No `dedup_key`: a wide float does not fit one, and these states hold only
+    // a handful of distinct amplitudes, so the scan is fine.
+}
+
+impl Amplitude for Real {
+    fn zero() -> Self {
+        Self::of_f64(0.0)
+    }
+    fn one() -> Self {
+        Self::of_f64(1.0)
+    }
+    fn of(x: f64) -> Self {
+        Self::of_f64(x)
+    }
+    fn power_of_two(exponent: i32) -> Self {
+        Self(rug::Float::with_val(working_precision(), 1) << exponent)
+    }
+    fn phase(theta: f64) -> Self {
+        let value = theta.cos();
+        assert!(
+            theta.sin().abs() < 1e-12,
+            "a real amplitude cannot hold the phase e^(i{theta})"
+        );
+        Self::of_f64(value)
+    }
+    fn magnitude(&self) -> f64 {
+        self.0.clone().abs().to_f64()
     }
 }
 
@@ -397,7 +493,7 @@ fn close(actual: f64, expected: f64) -> bool {
 // GHZ:  H on qubit 0, then a CNOT chain.  (|0..0> + |1..1>) / sqrt(2)
 // ---------------------------------------------------------------------------
 
-fn ghz(p: usize) {
+fn ghz(p: usize) -> bool {
     let n = 1usize << p;
     let levels = Levels::new(p);
     let context = RefCell::new(Context::default());
@@ -426,6 +522,7 @@ fn ghz(p: usize) {
 
     println!("is same: {}", correct as u8);
     report(duration, &state, &context);
+    correct
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +533,7 @@ fn ghz(p: usize) {
 // as there -- it is the query, not the algorithm.
 // ---------------------------------------------------------------------------
 
-fn bernstein_vazirani(p: usize, seed: u64) {
+fn bernstein_vazirani(p: usize, seed: u64) -> bool {
     let n = 1usize << p;
     let levels = Levels::new(p + 1); // n data + ancilla, padded to 2n
     let context = RefCell::new(Context::default());
@@ -492,18 +589,19 @@ fn bernstein_vazirani(p: usize, seed: u64) {
     expected.resize(2 * n, false);
     let mut other = expected.clone();
     other[0] = !other[0];
-    let correct = state.evaluate(&expected) == Int::power_of_two(n as u32)
+    let correct = state.evaluate(&expected) == Int::power_of_two(n as i32)
         && state.evaluate(&other) == Int::zero();
 
     println!("equal: {}", correct as u8);
     report(duration, &state, &context);
+    correct
 }
 
 // ---------------------------------------------------------------------------
 // Deutsch-Jozsa:  constant or balanced, in one query.
 // ---------------------------------------------------------------------------
 
-fn deutsch_jozsa(p: usize, seed: u64) {
+fn deutsch_jozsa(p: usize, seed: u64) -> bool {
     let n = 1usize << p;
     let levels = Levels::new(p + 1);
     let context = RefCell::new(Context::default());
@@ -558,18 +656,19 @@ fn deutsch_jozsa(p: usize, seed: u64) {
     let correct = if balanced {
         amplitude == Int::zero()
     } else {
-        amplitude == Int::power_of_two(n as u32)
+        amplitude == Int::power_of_two(n as i32)
     };
 
     println!("is_correct: {}", correct as u8);
     report(duration, &state, &context);
+    correct
 }
 
 // ---------------------------------------------------------------------------
 // QFT:  the textbook ladder -- reversal, then H and controlled phases.
 // ---------------------------------------------------------------------------
 
-fn qft(p: usize, seed: u64) {
+fn qft(p: usize, seed: u64) -> bool {
     let n = 1usize << p;
     let levels = Levels::new(p);
     let context = RefCell::new(Context::default());
@@ -640,6 +739,165 @@ fn qft(p: usize, seed: u64) {
 
     println!("is_correct: {}", correct as u8);
     report(duration, &state, &context);
+    correct
+}
+
+// ---------------------------------------------------------------------------
+// Grover:  amplify one marked string out of 2^n.
+//
+// Unlike everything above, this algorithm's cost is inherently exponential:
+// it needs floor((pi/4) 2^(n/2)) iterations, whatever the representation. Two
+// ways to pay that are implemented -- evolving the state one iteration at a
+// time, and exponentiating the operator by squaring -- because the reference
+// implementation takes the second and it is where its answers go wrong.
+// ---------------------------------------------------------------------------
+
+/// `m^exponent`, by binary exponentiation: `O(log exponent)` matrix multiplies
+/// in place of `exponent` matrix-vector ones.
+///
+/// This is the shape of the reference's `MultiplyRec`, and the reason its
+/// Grover gets through 51,471 iterations in a fraction of a second -- the
+/// operator is raised to a power symbolically rather than the state being
+/// evolved. It is only sound if the multiply is accurate enough to survive
+/// `log2(exponent)` squarings, which BENCHMARKS.md works out.
+fn matrix_power<'g, T: Amplitude>(
+    operator: &GcflobddT<'g, T>,
+    exponent: u128,
+    identity: &GcflobddT<'g, T>,
+    context: &RefCell<Context<'g>>,
+) -> GcflobddT<'g, T> {
+    let mut result = identity.clone();
+    let mut base = operator.clone();
+    let mut exponent = exponent;
+    while exponent > 0 {
+        if exponent & 1 == 1 {
+            result = result.mk_matmul(&base, context);
+        }
+        exponent >>= 1;
+        if exponent > 0 {
+            base = base.mk_matmul(&base, context);
+        }
+    }
+    result
+}
+
+/// The assignment carrying the largest-magnitude amplitude.
+///
+/// The reference draws one sample from `|amplitude|^2` instead; taking the peak
+/// is deterministic and is what a sampler converges to, and the success
+/// *probability* is reported separately so nothing is hidden by the choice.
+fn peak<T: Amplitude>(state: &GcflobddT<'_, T>) -> Vec<bool> {
+    let (best, _) = state
+        .values()
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.magnitude().total_cmp(&b.magnitude()))
+        .expect("a state has at least one amplitude");
+    state
+        .find_one_path_to_index(best)
+        .into_iter()
+        // A don't-care bit means every string through this exit has the same
+        // amplitude, so any completion is as good an answer as another.
+        .map(|bit| bit.unwrap_or(false))
+        .collect()
+}
+
+fn bit_string(bits: &[bool]) -> String {
+    bits.iter().map(|b| if *b { '1' } else { '0' }).collect()
+}
+
+fn grover<T: Amplitude>(p: usize, seed: u64, exponentiate: bool) -> bool {
+    let n = 1usize << p;
+    let levels = Levels::new(p);
+    let context = RefCell::new(Context::default());
+    let secret = secret_bits(n, seed);
+    // floor((pi/4) sqrt(N)) iterations, as the reference uses. The count itself
+    // is what caps this at 254 qubits, whatever the amplitude type.
+    let iterations = (std::f64::consts::FRAC_PI_4 * 2f64.powf(n as f64 / 2.0)).floor();
+    assert!(
+        iterations < u128::MAX as f64,
+        "iteration count overflows u128"
+    );
+    let iterations = iterations as u128;
+    let mode = if exponentiate {
+        "exponentiate"
+    } else {
+        "iterate"
+    };
+    println!("Grover start... n: {n} seed: {seed} iterations: {iterations} mode: {mode}");
+
+    let start = Instant::now();
+    let ops = Ops::new(&levels, &context);
+
+    // U_w = I - 2|w><w|: the phase oracle. |w><w| is one projector per qubit.
+    let marked: Vec<_> = secret
+        .iter()
+        .enumerate()
+        .map(|(qubit, bit)| (qubit, projector::<T>(*bit as usize)))
+        .collect();
+    let oracle = ops.identity[p].mk_matadd(
+        &place(&ops, p, 0, &marked, &context).mk_scale(&T::of(-2.0), &context),
+        &context,
+    );
+
+    // U_s = (2/N) J - I: the diffusion operator, J the all-ones matrix -- which
+    // is a Kronecker power of the all-ones 2x2, so it folds by doubling.
+    let all_ones = uniform(&ops, p, &[T::one(), T::one(), T::one(), T::one()], &context);
+    let diffusion = all_ones
+        .mk_scale(&T::power_of_two(1 - n as i32), &context)
+        .mk_matadd(&ops.identity[p].mk_scale(&T::of(-1.0), &context), &context);
+
+    let operator = diffusion.mk_matmul(&oracle, &context);
+
+    // |s>: the uniform superposition, every amplitude 1/sqrt(N).
+    let initial = T::power_of_two(-(n as i32) / 2);
+    assert!(
+        initial.magnitude() > 0.0,
+        "2^(-{n}/2) underflows this amplitude type"
+    );
+    let mut state = GcflobddT::mk_constant(initial, &levels.vector[p], &context);
+    if exponentiate {
+        let power = matrix_power(&operator, iterations, &ops.identity[p], &context);
+        state = power.mk_matvec(&state, &context);
+    } else {
+        for _ in 0..iterations {
+            state = operator.mk_matvec(&state, &context);
+        }
+    }
+    let answer = peak(&state);
+    let duration = start.elapsed();
+
+    // After k iterations the marked amplitude is exactly sin((2k+1)theta) and
+    // every other one cos((2k+1)theta)/sqrt(N-1), with theta = asin(1/sqrt(N)).
+    // Checking both pins down the whole state, since it holds only those two
+    // values -- far stronger than checking that one sample came back right.
+    let root_n = 2f64.powf(n as f64 / 2.0);
+    let angle = (2.0 * iterations as f64 + 1.0) * (1.0 / root_n).asin();
+    let mut unmarked = secret.clone();
+    unmarked[0] = !unmarked[0];
+    let near = |actual: f64, expected: f64| (actual - expected).abs() <= 1e-6;
+    let marked_amplitude = state.evaluate(&secret).magnitude();
+    let matches_theory = near(marked_amplitude, angle.sin().abs())
+        && near(
+            state.evaluate(&unmarked).magnitude(),
+            (angle.cos() / (root_n * root_n - 1.0).sqrt()).abs(),
+        );
+
+    let correct = answer == secret;
+    println!("s: {} ans_s: {}", bit_string(&secret), bit_string(&answer));
+    println!("equal: {}", correct as u8);
+    println!(
+        "probability: {:.6e} theory: {:.6e} matches theory: {}",
+        marked_amplitude * marked_amplitude,
+        angle.sin().powi(2),
+        matches_theory as u8
+    );
+    report(duration, &state, &context);
+    // The answer alone is not enough: a state that was only partly amplified
+    // still peaks on the marked string, which is exactly how the reference's
+    // Grover -- and this one in `f64` past 108 qubits -- reads correct while
+    // being wrong.
+    correct && matches_theory
 }
 
 // ---------------------------------------------------------------------------
@@ -647,14 +905,53 @@ fn qft(p: usize, seed: u64) {
 fn usage(program: &str) -> ! {
     eprintln!(
         "usage: {program} <test> <p> [seed]\n\
-         tests: testGHZAlgo | testBVAlgo | testDJAlgo | testQFT (ghz | bv | dj | qft)\n\
+         tests: testGHZAlgo | testBVAlgo | testDJAlgo | testQFT | testGroversAlgo\n\
+         \x20      | testGroversAlgoFast | testGroversAlgoBig\n\
+         \x20      (ghz | bv | dj | qft | grover | grover-fast | grover-big)\n\
          qubit count is n = 2^p, matching the reference CFLOBDD harness"
     );
     std::process::exit(2)
 }
 
+/// Squaring the Grover operator needs roughly `n/2` bits of mantissa before the
+/// rotation is representable at all; `n + 64` leaves room.
+fn grover_precision(p: usize) -> u32 {
+    u32::try_from((1usize << p) + 64).expect("precision fits a u32")
+}
+
+/// Every algorithm at a small size, with every correctness check asserted --
+/// what `cargo test --test quantum` runs, since this target has no harness of
+/// its own. The benchmark paths only *report* correctness, so that a run which
+/// comes back wrong still yields a measurement.
+fn smoke() {
+    assert!(ghz(3), "GHZ at 8 qubits");
+    for seed in 1..=3 {
+        assert!(bernstein_vazirani(2, seed), "BV at 4 qubits, seed {seed}");
+        // Even seeds are the constant oracle, odd ones the balanced oracle.
+        assert!(deutsch_jozsa(2, seed), "DJ at 4 qubits, seed {seed}");
+        assert!(qft(2, seed), "QFT at 4 qubits, seed {seed}");
+        assert!(
+            grover::<f64>(2, seed, false),
+            "Grover iterated, seed {seed}"
+        );
+        assert!(
+            grover::<f64>(2, seed, true),
+            "Grover exponentiated, seed {seed}"
+        );
+        set_working_precision(grover_precision(2));
+        assert!(
+            grover::<Real>(2, seed, true),
+            "Grover exponentiated in a wide float, seed {seed}"
+        );
+    }
+    println!("\nall algorithms verified at small sizes");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() == 1 {
+        return smoke();
+    }
     if args.len() < 3 {
         usage(&args[0]);
     }
@@ -666,6 +963,12 @@ fn main() {
         "testBVAlgo" | "bv" => bernstein_vazirani(p, seed),
         "testDJAlgo" | "dj" => deutsch_jozsa(p, seed),
         "testQFT" | "qft" => qft(p, seed),
+        "testGroversAlgo" | "grover" => grover::<f64>(p, seed, false),
+        "testGroversAlgoFast" | "grover-fast" => grover::<f64>(p, seed, true),
+        "testGroversAlgoBig" | "grover-big" => {
+            set_working_precision(grover_precision(p));
+            grover::<Real>(p, seed, true)
+        }
         _ => usage(&args[0]),
-    }
+    };
 }

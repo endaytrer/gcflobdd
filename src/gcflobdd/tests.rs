@@ -241,7 +241,11 @@ fn build_from_table<'g>(
         let mut term = Gcflobdd::mk_true(grammar, context);
         for i in 0..n {
             let proj = Gcflobdd::mk_projection(i, grammar, context);
-            let lit = if (a >> i) & 1 == 1 { proj } else { proj.mk_not() };
+            let lit = if (a >> i) & 1 == 1 {
+                proj
+            } else {
+                proj.mk_not()
+            };
             term = term.mk_and(&lit, context);
         }
         acc = acc.mk_or(&term, context);
@@ -258,14 +262,20 @@ fn oracle_grammars() -> Vec<(Grammar, usize)> {
             4,
         ),
         (Grammar::new(&["S2 -> BDD(4)".to_string()]).unwrap(), 4),
-        (Grammar::new(&["S2 -> BDD(2) BDD(2)".to_string()]).unwrap(), 4),
+        (
+            Grammar::new(&["S2 -> BDD(2) BDD(2)".to_string()]).unwrap(),
+            4,
+        ),
         (Grammar::new_bdd(4), 4),
         // n = 5 (odd, forces uneven aligned splits)
         (
             Grammar::new(&["S -> A a".to_string(), "A -> a a a a".to_string()]).unwrap(),
             5,
         ),
-        (Grammar::new(&["S -> BDD(2) BDD(3)".to_string()]).unwrap(), 5),
+        (
+            Grammar::new(&["S -> BDD(2) BDD(3)".to_string()]).unwrap(),
+            5,
+        ),
         // n = 6
         (
             Grammar::new(&["S2 -> S1 S1".to_string(), "S1 -> a a a".to_string()]).unwrap(),
@@ -273,7 +283,10 @@ fn oracle_grammars() -> Vec<(Grammar, usize)> {
         ),
         (Grammar::new(&["S -> BDD(4) a a".to_string()]).unwrap(), 6),
         // n = 8: two field-like BDD leaves + a balanced tree
-        (Grammar::new(&["S -> BDD(4) BDD(4)".to_string()]).unwrap(), 8),
+        (
+            Grammar::new(&["S -> BDD(4) BDD(4)".to_string()]).unwrap(),
+            8,
+        ),
         (
             Grammar::new(&[
                 "S3 -> S2 S2".to_string(),
@@ -294,10 +307,76 @@ fn test_evaluate_matches_primitives() {
         assert_eq!(grammar.root.num_vars, n);
         let context = RefCell::new(Context::default());
         for _ in 0..4 {
-            let table: Vec<bool> = (0..(1usize << n)).map(|_| prng(&mut state) & 1 == 0).collect();
+            let table: Vec<bool> = (0..(1usize << n))
+                .map(|_| prng(&mut state) & 1 == 0)
+                .collect();
             let f = build_from_table(&table, n, &grammar, &context);
             for (a, &val) in table.iter().enumerate() {
                 assert_eq!(f.evaluate(&assignment_of(a, n)), val, "n={n}, a={a}");
+            }
+        }
+    }
+}
+
+/// `values()` must list exactly `expected`, and `find_one_path_to_index` must
+/// hand back an assignment producing each one -- with the positions it leaves
+/// unconstrained genuinely free.
+fn check_values_and_paths<T: Clone + PartialEq + Ord + std::fmt::Debug>(
+    f: &GcflobddT<'_, T>,
+    expected: &[T],
+    n: usize,
+) {
+    let mut listed = f.values().to_vec();
+    listed.sort_unstable();
+    assert_eq!(listed, expected, "n={n}");
+
+    for (index, value) in f.values().iter().enumerate() {
+        let path = f.find_one_path_to_index(index);
+        assert_eq!(path.len(), n);
+        let mut assignment: Vec<bool> = path.iter().map(|b| b.unwrap_or(false)).collect();
+        assert!(f.evaluate(&assignment) == *value, "n={n} index={index}");
+        for (variable, bit) in path.iter().enumerate() {
+            if bit.is_some() {
+                continue;
+            }
+            assignment[variable] = !assignment[variable];
+            assert!(
+                f.evaluate(&assignment) == *value,
+                "n={n} variable {variable} was reported free but is not"
+            );
+            assignment[variable] = !assignment[variable];
+        }
+    }
+}
+
+#[test]
+fn test_values_and_find_one_path_to_index() {
+    let mut state = 0x5eed_1234_abcd_0f0fu64;
+    for (grammar, n) in oracle_grammars() {
+        let context = RefCell::new(Context::default());
+        for _ in 0..3 {
+            let table: Vec<bool> = (0..(1usize << n))
+                .map(|_| prng(&mut state) % 3 == 0)
+                .collect();
+            let mut distinct = table.clone();
+            distinct.sort_unstable();
+            distinct.dedup();
+            // Every grouping shape, but only two values: `build_from_table`
+            // goes through the primitive operators, which BDD leaves support.
+            let f = build_from_table(&table, n, &grammar, &context);
+            check_values_and_paths(&f, &distinct, n);
+
+            // Many values, which needs `from_table` and so an all-`a` grammar.
+            if n == 4 {
+                let table: Vec<i32> = (0..16).map(|_| (prng(&mut state) % 5) as i32).collect();
+                let mut distinct = table.clone();
+                distinct.sort_unstable();
+                distinct.dedup();
+                let grammar =
+                    Grammar::new(&["S2 -> S1 S1".to_string(), "S1 -> a a".to_string()]).unwrap();
+                let context = RefCell::new(Context::default());
+                let f = GcflobddT::from_table(&table, &grammar, &context);
+                check_values_and_paths(&f, &distinct, n);
             }
         }
     }
@@ -309,7 +388,9 @@ fn test_sat_count_matches_popcount() {
     for (grammar, n) in oracle_grammars() {
         let context = RefCell::new(Context::default());
         for _ in 0..4 {
-            let table: Vec<bool> = (0..(1usize << n)).map(|_| prng(&mut state) & 3 == 0).collect();
+            let table: Vec<bool> = (0..(1usize << n))
+                .map(|_| prng(&mut state) & 3 == 0)
+                .collect();
             let popcount = table.iter().filter(|&&x| x).count();
             let f = build_from_table(&table, n, &grammar, &context);
             let log2 = f.sat_count();
@@ -324,7 +405,10 @@ fn test_sat_count_matches_popcount() {
     // Boundary cases: constants.
     for (grammar, n) in oracle_grammars() {
         let context = RefCell::new(Context::default());
-        assert_eq!(Gcflobdd::mk_false(&grammar, &context).sat_count(), f64::NEG_INFINITY);
+        assert_eq!(
+            Gcflobdd::mk_false(&grammar, &context).sat_count(),
+            f64::NEG_INFINITY
+        );
         let full = Gcflobdd::mk_true(&grammar, &context).sat_count();
         assert_eq!(full.exp2().round() as usize, 1usize << n);
     }
