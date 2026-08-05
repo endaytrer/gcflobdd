@@ -25,7 +25,8 @@ cargo test --test matmul --release      # matrix operations (this crate only)
 LABEL=rust-bigint ONLY=rust RUST_BIN=<bigint build> PMIN=2 PMAX=10 \
   SEEDS="1 2 3 4 5 6 7 8 9 10" OUT=results/grover_compare.csv \
   scripts/compare_cflobdd.sh grover
-ONLY=cpp PMIN=2 PMAX=6 SEEDS="1 2 3 4 5 6 7 8 9 10" APPEND=1 \
+CPP_BIN=<c++ build> CPP_LABEL=cpp-fixed ONLY=cpp PMIN=2 PMAX=9 \
+  SEEDS="1 2 3 4 5 6 7 8 9 10" APPEND=1 \
   OUT=results/grover_compare.csv scripts/compare_cflobdd.sh grover
 
 # Past 2046 qubits the theory check cannot run, so ask for a weaker one:
@@ -44,13 +45,14 @@ every size from 2 to **65536 qubits**. At the top of that ladder:
 | **Bernstein-Vazirani**, 65536 qubits | **167 ms** | 429 ms | **2.6x** |
 | **Deutsch-Jozsa**, 65536 qubits | **24 ms** | 89 ms | **3.8x** |
 | **QFT**, 16 qubits | **102 ms** | 194 ms | **1.9x** |
-| **Grover**, 32 qubits | **2.0 ms**, 10/10 right | 430 ms, **0/10 right** | 216x |
-| **Grover**, 64 qubits | **4.0 ms**, 10/10 right | 10.8 s, **0/10 right** | 2700x |
-| **Grover**, 1024 qubits | **35 ms**, 10/10 verified | out of reach | |
-| **Grover**, 16384 qubits | **2.8 s**, answer right | out of reach | |
+| **Grover**, 128 qubits | **7.8 ms** | 10 ms | 1.3x |
+| **Grover**, 512 qubits | **18 ms** | 115 ms | **6.3x** |
+| **Grover**, 1024 qubits | **35 ms** | segfaults | |
+| **Grover**, 16384 qubits | **2.8 s** | out of reach | |
 | GHZ diagram, 65536 qubits | **216** | 914 | 4.2x smaller |
 | BV diagram, 65536 qubits | **33,493** | 58,799 | 1.8x smaller |
 | QFT diagram, 16 qubits | **287** | 132,238 | 461x smaller |
+| Grover diagram, 512 qubits | **570** | 1,028 | 1.8x smaller |
 | peak RSS, 65536 qubits | **392-737 MB** | 987-1091 MB | |
 
 Every run finishes inside 5 s wall-clock, the largest being GHZ at 2.8 s.
@@ -63,13 +65,15 @@ because that circuit is `n` sequential gates for both. Neither implementation
 now reaches further than the other on those four: the `i128` ceiling that used
 to stop BV and DJ at 64 qubits is gone (see *Arbitrary-precision coefficients*).
 
-**Grover is the exception, and it is not a speed result.** The reference's
-Grover returns wrong answers from 16 qubits up -- 0 of 10 seeds correct at 16,
-32 and 64 -- which its own repository documents and attributes to how it raises
-the Grover operator to a power. This crate's is fully verified against theory at
-every size to **1024 qubits** (35 ms), and returns the right answer under a
-weaker check to **16384 qubits** (2.8 s). The 216x and 2700x above are real but
-secondary: the comparison is between an answer and a wrong answer.
+**Grover needs a caveat.** The reference's Grover is wrong from 16 qubits up as
+its `HEAD` stands -- 0 of 10 seeds correct at 16, 32 and 64 -- so its rows above
+come from a build carrying a one-line fix to an uninitialised field in its
+multiply, without which the comparison would be against a wrong answer. Fixed,
+the two are close through the middle of the ladder (1.3-2x from 16 to 128
+qubits) and diverge at the top, where this crate is 6.3x faster at 512 qubits
+and still running at 1024 and beyond. Ours is also verified against theory at
+every size to 1024 qubits, and answers correctly under a weaker check to
+**16384**.
 
 ## Results
 
@@ -152,31 +156,44 @@ the reference takes the second:
   `testGroversAlgoBig` in a wide float).
 
 Head to head, this crate exponentiating in a wide float against the reference's
-`testGroversAlgo`. Ten seeds per size; "right" counts runs whose answer is the
-planted string. All rows are the `bigint` build; the default `i128` build gives
-the same answers to 64 qubits and refuses past that, since the diffusion
-operator is dense and its path counts reach `2^n`.
+`testGroversAlgo`. Ten seeds per size to 128 qubits, three beyond; both sides
+answered every run correctly. All rows here are the `bigint` build; the default
+`i128` build gives the same answers to 64 qubits and refuses past that, since
+the diffusion operator is dense and its path counts reach `2^n`.
 
-| qubits | rust | right | c++ | right | ratio | rust size | c++ size |
-|--:|--:|--:|--:|--:|--:|--:|--:|
-| 4 | 0.38 ms | **10/10** | 2 ms | 10/10 | 5x | 15 | 74 |
-| 8 | 0.64 ms | **10/10** | 4.5 ms | 7/10 | 7x | 26 | 128 |
-| 16 | 1.5 ms | **10/10** | 26.5 ms | **0/10** | 18x | 49 | 212 |
-| 32 | 2.0 ms | **10/10** | 430 ms | **0/10** | 216x | 78 | 426 |
-| 64 | 4.0 ms | **10/10** | 10.8 s | **0/10** | 2700x | 123 | 809 |
-| 128 | 7.8 ms | **10/10** | not run | - | - | 204 | - |
-| 256 | 10.2 ms | **10/10** | not run | - | - | 335 | - |
-| 512 | 18.4 ms | **10/10** | not run | - | - | 570 | - |
-| 1024 | 35.4 ms | **10/10** | not run | - | - | 1,009 | - |
+**The reference is built from its `HEAD` plus a one-line fix.** As it stands, its
+Grover returns wrong answers from 16 qubits up -- 0 of 10 seeds at 16, 32 and 64
+-- so timing it against a correct implementation would measure nothing. An
+uninitialised field in its multiply is responsible; initialising it makes the
+reference correct at every size below, and much faster besides, because the same
+defect was inflating its diagrams. That fix is one line in `matmult_map.cpp` and
+belongs in that project; the numbers below are what it gets with the fix
+applied.
 
-At 1024 qubits that is a search over `2^1024` items -- and
-`1.05 * 10^154` iterations of the Grover operator, an exact 512-bit integer --
-simulated in 35 ms and 9.4 MB. The reference's own timing is erratic at 64
-qubits, 3.5 s to 20.7 s across the ten seeds, and its peak RSS reaches 1.37 GB
-against 5-9 MB here, though most of that gap is the ~867 MB of caches it
-preallocates at startup regardless of the problem. Its degradation starts before
-16 qubits, too: at 8 it already misses 3 of 10 seeds, where theory puts the
-single-shot success probability at 0.99995.
+| qubits | rust | c++ | ratio | rust size | c++ size |
+|--:|--:|--:|--:|--:|--:|
+| 4 | 0.38 ms | 2 ms | 5.3x | 15 | 47 |
+| 8 | 0.64 ms | 2 ms | 3.1x | 26 | 73 |
+| 16 | 1.5 ms | 3 ms | 2.1x | 49 | 110 |
+| 32 | 2.0 ms | 4 ms | 2.0x | 78 | 161 |
+| 64 | 4.0 ms | 6 ms | 1.5x | 123 | 250 |
+| 128 | 7.8 ms | 10 ms | 1.3x | 204 | 388 |
+| 256 | 10.2 ms | 30 ms | 2.9x | 335 | 617 |
+| 512 | 18.4 ms | 115 ms | 6.3x | 570 | 1,028 |
+| 1024 | **35.4 ms** | segfaults | - | 1,009 | - |
+
+The two are within 1.3-2x of each other from 16 to 128 qubits, which is the
+honest reading of the middle of this ladder -- and the reference's millisecond
+timer makes the 4- and 8-qubit ratios unreliable, since 2 ms there is one tick.
+The gap reopens at the top: 2.9x at 256 qubits and 6.3x at 512, because the
+reference's cost per doubling grows faster than this crate's. It then crashes
+with `SIGSEGV` at 1024 qubits, on all three seeds, about 2 s in. The diagram is
+consistently about 2x smaller here at every size.
+
+At 1024 qubits this crate is searching `2^1024` items -- `1.05 * 10^154`
+iterations of the Grover operator, an exact 512-bit integer -- in 35 ms and
+9.4 MB. The reference's peak RSS is ~847 MB throughout, but that is almost
+entirely the caches it preallocates at startup regardless of problem size.
 
 **1024 qubits is the verifier's limit, not the simulation's.** Checking against
 theory is `f64` arithmetic: `N = 2^n` becomes infinite at 2048 qubits and the
@@ -196,13 +213,6 @@ Since the state holds exactly those two values, that check pins all of it. Both
 hold at every size in the table, to within `1e-6`. The success probability is
 0.961 at 4 qubits and above 0.9999 everywhere else, so the two decoding rules
 agree with probability at least 0.96 anyway.
-
-**How the reference fails.** Not by being slow or running out of memory -- it
-stays under a second to 32 qubits and its diagram stays tiny. It returns a wrong
-string, quickly. At 16 qubits the answers average 6.4 of 16 bits wrong and at 32
-qubits 13.1 of 32, against a random-guess baseline of `n/2` -- so the state is
-barely amplified rather than mis-sampled. The cause is a defect in that
-implementation and is tracked there, not here.
 
 ### How far with a weaker check
 
@@ -431,6 +441,9 @@ These matter for reading the numbers honestly.
   here, one sample there. The success probability is reported alongside so the
   choice can be discounted; at 0.96 and above the two rules agree almost always.
 - **Grover's reference numbers are from `testGroversAlgo`**, the
-  `GroversAlgoWithV4` entry point, built from that repository's `HEAD` in a
-  clean worktree -- its working tree carries uncommitted changes to the
-  multiply, and the binary sitting there was built after them.
+  `GroversAlgoWithV4` entry point, built in a clean worktree from that
+  repository's `HEAD` plus the one-line fix described above -- nothing else. Its
+  own working tree carries unrelated uncommitted changes to the multiply, and
+  the binary sitting there was built after them, so neither was used.
+  `results/grover_compare.csv` keeps both sets of rows, `cpp` for `HEAD` as-is
+  and `cpp-fixed` for the patched build.

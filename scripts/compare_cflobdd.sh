@@ -16,6 +16,7 @@
 #   RUST_BIN  path to this crate's benchmark (default: newest target/release build)
 #   OUT       output CSV                     (default results/quantum_compare.csv)
 #   LABEL     name for this crate's rows     (default rust; e.g. rust-bigint)
+#   CPP_LABEL name for the reference's rows  (default cpp; e.g. cpp-fixed)
 #   ONLY      rust | cpp | both              (default both)
 #   APPEND    1 to add to an existing CSV rather than start one
 set -uo pipefail
@@ -25,6 +26,7 @@ CPP_BIN=${CPP_BIN:-$here/../cflobdd/CFLOBDD/cflobdd}
 RUST_BIN=${RUST_BIN:-}
 OUT=${OUT:-$here/results/quantum_compare.csv}
 LABEL=${LABEL:-rust}
+CPP_LABEL=${CPP_LABEL:-cpp}
 ONLY=${ONLY:-both}
 APPEND=${APPEND:-0}
 TIMEOUT=${TIMEOUT:-300}
@@ -46,7 +48,7 @@ fi
 
 # Skip a side entirely when ONLY selects the other one.
 run_rust() { [ "$ONLY" = cpp  ] || run "$LABEL" "$RUST_BIN" "$@"; }
-run_cpp()  { [ "$ONLY" = rust ] || run cpp      "$CPP_BIN"  "$@"; }
+run_cpp()  { [ "$ONLY" = rust ] || run "$CPP_LABEL" "$CPP_BIN"  "$@"; }
 
 tmp_out=$(mktemp); tmp_time=$(mktemp)
 trap 'rm -f "$tmp_out" "$tmp_time"' EXIT
