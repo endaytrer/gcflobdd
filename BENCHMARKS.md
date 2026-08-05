@@ -22,7 +22,7 @@ cargo test --test matmul --release      # matrix operations (this crate only)
 # Grover, ten seeds per size.  GROVER_MODE picks this crate's variant:
 # testGroversAlgo (honest iteration), testGroversAlgoFast (f64 exponentiation)
 # or testGroversAlgoBig (wide-float exponentiation, the default).
-LABEL=rust-bigint ONLY=rust RUST_BIN=<bigint build> PMIN=2 PMAX=8 \
+LABEL=rust-bigint ONLY=rust RUST_BIN=<bigint build> PMIN=2 PMAX=10 \
   SEEDS="1 2 3 4 5 6 7 8 9 10" OUT=results/grover_compare.csv \
   scripts/compare_cflobdd.sh grover
 ONLY=cpp PMIN=2 PMAX=6 SEEDS="1 2 3 4 5 6 7 8 9 10" APPEND=1 \
@@ -42,6 +42,7 @@ every size from 2 to **65536 qubits**. At the top of that ladder:
 | **QFT**, 16 qubits | **102 ms** | 194 ms | **1.9x** |
 | **Grover**, 32 qubits | **2.0 ms**, 10/10 right | 430 ms, **0/10 right** | 216x |
 | **Grover**, 64 qubits | **4.0 ms**, 10/10 right | 10.8 s, **0/10 right** | 2700x |
+| **Grover**, 1024 qubits | **35 ms**, 10/10 right | out of reach | |
 | GHZ diagram, 65536 qubits | **216** | 914 | 4.2x smaller |
 | BV diagram, 65536 qubits | **33,493** | 58,799 | 1.8x smaller |
 | QFT diagram, 16 qubits | **287** | 132,238 | 461x smaller |
@@ -61,7 +62,7 @@ to stop BV and DJ at 64 qubits is gone (see *Arbitrary-precision coefficients*).
 Grover returns wrong answers from 16 qubits up -- 0 of 10 seeds correct at 16,
 32 and 64 -- which its own repository documents and attributes to how it raises
 the Grover operator to a power. This crate's is correct at every size run, to
-**256 qubits**, in 10 ms. The 216x and 2700x above are real but secondary: the
+**1024 qubits**, in 35 ms. The 216x and 2700x above are real but secondary: the
 comparison is between an answer and a wrong answer.
 
 ## Results
@@ -159,15 +160,26 @@ operator is dense and its path counts reach `2^n`.
 | 64 | 4.0 ms | **10/10** | 10.8 s | **0/10** | 2700x | 123 | 809 |
 | 128 | 7.8 ms | **10/10** | not run | - | - | 204 | - |
 | 256 | 10.2 ms | **10/10** | not run | - | - | 335 | - |
+| 512 | 18.4 ms | **10/10** | not run | - | - | 570 | - |
+| 1024 | 35.4 ms | **10/10** | not run | - | - | 1,009 | - |
 
-At 256 qubits that is a search over `2^256` items and `2.7 * 10^38` iterations
-of the Grover operator, simulated in 10 ms and 6 MB. The reference's own timing
-is erratic at 64 qubits -- 3.5 s to 20.7 s across the ten seeds -- and its peak
-RSS reaches 1.37 GB against 5-6 MB here, though most of that gap is the ~867 MB
-of caches it preallocates at startup regardless of the problem.
+At 1024 qubits that is a search over `2^1024` items -- and
+`1.05 * 10^154` iterations of the Grover operator, an exact 512-bit integer --
+simulated in 35 ms and 9.4 MB. The reference's own timing is erratic at 64
+qubits, 3.5 s to 20.7 s across the ten seeds, and its peak RSS reaches 1.37 GB
+against 5-9 MB here, though most of that gap is the ~867 MB of caches it
+preallocates at startup regardless of the problem. Its degradation starts before
+16 qubits, too: at 8 it already misses 3 of 10 seeds, where theory puts the
+single-shot success probability at 0.99995.
 
-The degradation starts before 16 qubits: at 8 qubits it already misses 3 of 10
-seeds, where theory puts the single-shot success probability at 0.99995.
+**Nothing here is close to a time limit.** Cost grows about linearly in qubit
+count -- 1.9x from 512 to 1024 -- so the largest run sits 140x inside a 5 s
+budget. What stops the ladder is neither time nor the representation but the
+*checker*: verifying against theory is `f64` arithmetic, and `N = 2^n` becomes
+infinite at 2048 qubits, where the expected unmarked amplitude also underflows
+to zero. Rather than let the check quietly compare zero against zero and pass,
+`grover` asserts on it, so 2046 qubits is a hard edge with a clear message.
+Lifting it means a wide float in the verification, not in the simulation.
 
 **Correctness is checked differently on the two sides, and more strictly here.**
 The reference draws one sample from `|amplitude|^2` and asks whether it equals
@@ -204,6 +216,8 @@ The 796 s entry is a single run, for obvious reasons:
 | 64 | 796 s | 3.2 ms | 4.0 ms |
 | 128 | infeasible | 5.4 ms **wrong** | 7.8 ms |
 | 256 | infeasible | 7.2 ms **wrong** | 10.2 ms |
+| 512 | infeasible | 20.8 ms **wrong** | 18.4 ms |
+| 1024 | infeasible | 36.3 ms **wrong** | 35.4 ms |
 
 Honest iteration is the fastest thing here up to 16 qubits, but it is
 `Theta(2^(n/2))` matrix-vector products by construction: 51,471 of them at 32
@@ -227,9 +241,13 @@ and fails at 128, arriving at a success probability of `2.4e-7` instead of 1.
 
 That failure is worth dwelling on because **it still reports the right answer**.
 The state is partially amplified, so the marked string is still the peak and
-`equal:` reads 1 at 128 and 256 qubits; only the theory check catches it. That
-is the same signature as the reference's failure, which is why the `verified`
-column exists in `results/grover_compare.csv` at all.
+`equal:` reads 1 from 128 through 512 qubits; only the theory check catches it.
+That is the same signature as the reference's failure, which is why the
+`verified` column exists in `results/grover_compare.csv` at all. It only becomes
+self-evident at 1024 qubits, where the rotation is lost outright: `M^k` comes
+back a multiple of the identity, the state stays exactly uniform, its amplitude
+overflows to `inf`, and the diagram collapses to a **single node** -- 1009 nodes
+and edges in the wide float against 1 in `f64`, for the same circuit.
 
 The fix is mantissa, not representation: `testGroversAlgoBig` carries `n + 64`
 bits (320 at 256 qubits) and verifies at every size. It costs nothing

@@ -762,23 +762,38 @@ fn qft(p: usize, seed: u64) -> bool {
 /// `log2(exponent)` squarings, which BENCHMARKS.md works out.
 fn matrix_power<'g, T: Amplitude>(
     operator: &GcflobddT<'g, T>,
-    exponent: u128,
+    exponent: &rug::Integer,
     identity: &GcflobddT<'g, T>,
     context: &RefCell<Context<'g>>,
 ) -> GcflobddT<'g, T> {
     let mut result = identity.clone();
     let mut base = operator.clone();
-    let mut exponent = exponent;
-    while exponent > 0 {
-        if exponent & 1 == 1 {
+    let bits = exponent.significant_bits();
+    for bit in 0..bits {
+        if exponent.get_bit(bit) {
             result = result.mk_matmul(&base, context);
         }
-        exponent >>= 1;
-        if exponent > 0 {
+        if bit + 1 < bits {
             base = base.mk_matmul(&base, context);
         }
     }
     result
+}
+
+/// `floor((pi/4) 2^(n/2))`, the standard iteration count, computed exactly.
+///
+/// An arbitrary-precision integer rather than a `u128`: at 1024 qubits this is
+/// a 512-bit number, and the reference computes it the same way, from a
+/// `cpp_dec_float` pi.
+fn grover_iterations(n: usize) -> rug::Integer {
+    debug_assert_eq!(n % 2, 0, "n is a power of two, so n/2 is exact");
+    let precision = u32::try_from(n + 64).expect("precision fits a u32");
+    let pi = rug::Float::with_val(precision, rug::float::Constant::Pi);
+    let scaled = (pi / 4u32) << u32::try_from(n / 2).expect("n/2 fits a u32");
+    scaled
+        .floor()
+        .to_integer()
+        .expect("the iteration count is finite")
 }
 
 /// The assignment carrying the largest-magnitude amplitude.
@@ -811,14 +826,7 @@ fn grover<T: Amplitude>(p: usize, seed: u64, exponentiate: bool) -> bool {
     let levels = Levels::new(p);
     let context = RefCell::new(Context::default());
     let secret = secret_bits(n, seed);
-    // floor((pi/4) sqrt(N)) iterations, as the reference uses. The count itself
-    // is what caps this at 254 qubits, whatever the amplitude type.
-    let iterations = (std::f64::consts::FRAC_PI_4 * 2f64.powf(n as f64 / 2.0)).floor();
-    assert!(
-        iterations < u128::MAX as f64,
-        "iteration count overflows u128"
-    );
-    let iterations = iterations as u128;
+    let iterations = grover_iterations(n);
     let mode = if exponentiate {
         "exponentiate"
     } else {
@@ -857,10 +865,13 @@ fn grover<T: Amplitude>(p: usize, seed: u64, exponentiate: bool) -> bool {
     );
     let mut state = GcflobddT::mk_constant(initial, &levels.vector[p], &context);
     if exponentiate {
-        let power = matrix_power(&operator, iterations, &ops.identity[p], &context);
+        let power = matrix_power(&operator, &iterations, &ops.identity[p], &context);
         state = power.mk_matvec(&state, &context);
     } else {
-        for _ in 0..iterations {
+        let steps = iterations
+            .to_u64()
+            .expect("more than 2^64 iterations cannot be walked one at a time");
+        for _ in 0..steps {
             state = operator.mk_matvec(&state, &context);
         }
     }
@@ -871,8 +882,21 @@ fn grover<T: Amplitude>(p: usize, seed: u64, exponentiate: bool) -> bool {
     // every other one cos((2k+1)theta)/sqrt(N-1), with theta = asin(1/sqrt(N)).
     // Checking both pins down the whole state, since it holds only those two
     // values -- far stronger than checking that one sample came back right.
-    let root_n = 2f64.powf(n as f64 / 2.0);
-    let angle = (2.0 * iterations as f64 + 1.0) * (1.0 / root_n).asin();
+    let root_n = 2f64.powi((n / 2) as i32);
+    // Past 2046 qubits `N = 2^n` is f64's infinity and the expected unmarked
+    // amplitude underflows to zero, which would make the second half of the
+    // check below compare 0 against 0 and pass for any state at all. Refuse
+    // rather than claim a verification that is not happening: what this needs
+    // is a wide float in the checker, not in the simulation.
+    assert!(
+        root_n.is_finite(),
+        "the theory check is f64 arithmetic and cannot reach {n} qubits"
+    );
+    let angle = (2.0 * iterations.to_f64() + 1.0) * (1.0 / root_n).asin();
+    // sqrt(N - 1), written so that it neither overflows at 1024 qubits (where
+    // N = 2^1024 is f64's infinity) nor rounds to sqrt(N) at 4, where the
+    // difference between sqrt(15) and 4 is 3%.
+    let root_n_minus_one = root_n * (1.0 - 2f64.powi(-(n as i32))).sqrt();
     let mut unmarked = secret.clone();
     unmarked[0] = !unmarked[0];
     let near = |actual: f64, expected: f64| (actual - expected).abs() <= 1e-6;
@@ -880,7 +904,7 @@ fn grover<T: Amplitude>(p: usize, seed: u64, exponentiate: bool) -> bool {
     let matches_theory = near(marked_amplitude, angle.sin().abs())
         && near(
             state.evaluate(&unmarked).magnitude(),
-            (angle.cos() / (root_n * root_n - 1.0).sqrt()).abs(),
+            (angle.cos() / root_n_minus_one).abs(),
         );
 
     let correct = answer == secret;
