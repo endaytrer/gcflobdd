@@ -201,10 +201,72 @@ agree with probability at least 0.96 anyway.
 stays under a second to 32 qubits and its diagram stays tiny. It returns a wrong
 string, quickly. At 16 qubits the answers average 6.4 of 16 bits wrong and at 32
 qubits 13.1 of 32, against a random-guess baseline of `n/2` -- so the state is
-barely amplified rather than mis-sampled. The `cflobdd` repository's own
-investigation reaches the same conclusion and localises it to `MultiplyRec`, its
-memoized binary-splitting exponentiation of `M`, which carries a rescaling that
-is applied on some paths and not on others.
+barely amplified rather than mis-sampled.
+
+### Why the reference's Grover is wrong
+
+**It is not precision, and the two implementations are the same algorithm.**
+`BIG_FLOAT` there is `cpp_dec_float_100`, a 332-bit mantissa: by the requirement
+derived above, `2(b+1) > n`, that carries operator squaring past 660 qubits, and
+it fails at 16. Its path multiplicities are `cpp_int`, arbitrary precision, just
+like this crate's `bigint` build. Both implementations use the same deferred
+semiring -- their `MatMultMapHandle` maps a pair of operand exits to a `cpp_int`
+count exactly as `MatMulMap` maps one to a `Coefficient` -- and line for line
+the two Grovers agree: same `U_w = I - 2|w><w|`, same `U_s = (2/N) J - I`, same
+`M = U_s U_w`, same `k = floor((pi/4) sqrt(N))`.
+
+**The defect is in matrix multiplication, for products where both operands are
+dense.** The repository's own `GroversSquaringCheck` shows it in two lines:
+
+```
+U_w*I == U_w: 1   U_s*I == U_s: 1   M*I == M: 1   I*M == M: 1
+U_w*U_w == I: 1   U_s*U_s == I: 0   M*U_w == U_s: 1
+```
+
+Every product against the identity or against `U_w` -- which is diagonal, so
+each output entry is a single term and no counting arises -- is right. `U_s^2`,
+the one dense-times-dense product in that set, is wrong. And `U_s` is its own
+inverse precisely *because* `J^2 = N J`, so `(U_s^2)[x][y]` comes out right only
+if all `N` intermediate indices are counted. At 8 qubits:
+
+```
+U_s    {-0.992188, 0.0078125}                             exact: 2/N - 1, 2/N
+U_s^2  {0.986084, -0.013916, -0.00610352, -0.00598145}    should be {1, 0}
+```
+
+Solving each of those for how many intermediate indices were actually summed
+gives **28, 156 and 158 in place of 256** -- integers, and different for
+different entries. That is a path-multiplicity undercount, not a rounding error:
+at 100 digits, rounding would appear around the hundredth significant figure,
+not the third.
+
+**Which explains the size dependence exactly.** `M = U_s U_w` inherits `U_s`'s
+density, so every matrix-times-matrix product inside `MultiplyRec`'s
+exponentiation is a dense pair, while applying `M` to a *vector* is not. The
+controlled experiment is already in that repository: `GroversAlgoHonestIter`
+differs from `GroversAlgoWithV4` only in applying `M` `k` times instead of
+squaring it. At 16 qubits, six seeds:
+
+| | right |
+|---|--:|
+| `testGroversAlgo` (exponentiate) | 1/6 |
+| `testGroversAlgoHonest` (iterate) | **6/6** |
+
+Same oracle, same diffusion, same embedding, same sampler. Only the route to
+`M^k` differs. At 4 and 8 qubits, where `k` is 3 and 12, few enough squarings
+happen for the undercount to stay survivable, which is why those sizes pass.
+
+Two things this rules out. `MultiplyRec`'s much-suspected rescaling -- it
+returns `(1/sqrt 2) M` from some base cases while memoizing the unscaled value
+-- contributes only a *scalar* factor, and a scalar multiple of `M^k` still has
+`M^k`'s handful of distinct entries, where the observed `M^201` has about a
+hundred. The sampler is likewise not it: its main path draws against a threshold
+proportional to the total path weight, so it is scale-invariant. Neither can
+manufacture wrong entries; the multiply does.
+
+This crate passes both identities as exact diagram equality, and `J^2 = N J`
+with the constant exactly `N`, at dimensions 2 through 256 --
+`grover_operators_are_involutions` in `src/gcflobdd/matmul/tests.rs`.
 
 ### How far with a weaker check
 
@@ -309,8 +371,9 @@ measurable here -- the median wide-float/`f64` ratio over matched seeds is 1.08,
 well inside a run-to-run spread that runs 0.5x to 3x on runs this short -- since
 the diagrams hold only a handful of distinct amplitudes and the work is
 structural. Note the reference already carries 100-digit floats throughout,
-ample for 108 qubits and well beyond, and still fails at 16: that is what rules
-precision out as the cause of *its* failure.
+ample for 660 qubits by this same requirement, and still fails at 16 -- which is
+what rules precision out as the cause of *its* failure, and sends the search for
+that cause to *Why the reference's Grover is wrong* above.
 
 ### Matrix operations
 
@@ -432,7 +495,15 @@ These matter for reading the numbers honestly.
 - **Grover's answer is decoded differently on the two sides** -- peak amplitude
   here, one sample there. The success probability is reported alongside so the
   choice can be discounted; at 0.96 and above the two rules agree almost always.
-- **Grover's reference numbers are from `testGroversAlgo`**, the
-  `GroversAlgoWithV4` entry point. That repository also carries a
-  `testGroversAlgoHonest` variant added while investigating the failure; it was
-  not measured here, and the working tree it lives in has uncommitted changes.
+- **Grover's reference timings are from `testGroversAlgo`**, the
+  `GroversAlgoWithV4` entry point. The `testGroversAlgoHonest` and
+  `testGroversSquaringCheck` diagnostics used in *Why the reference's Grover is
+  wrong* are additions to that repository made while investigating this, not
+  upstream entry points.
+- **That diagnosis was measured against a pristine build.** The reference's
+  working tree carries an uncommitted change to `matrix1234_node.cpp` -- a
+  `Reduce` call re-enabled inside the multiply -- and the binary sitting there
+  was built after it. Everything in that section was re-run on a fresh worktree
+  at its `HEAD` with only the diagnostic entry points copied in, leaving the
+  multiply untouched. Both builds fail the same identities and get Grover wrong
+  from 16 qubits; only the particular wrong values differ.

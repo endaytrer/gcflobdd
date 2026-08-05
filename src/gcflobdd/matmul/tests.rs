@@ -959,3 +959,64 @@ fn kron_survives_gc() {
         "square after gc",
     );
 }
+
+/// The two Grover operators must each be their own inverse, and only one of
+/// those identities needs path multiplicities to be right.
+///
+/// `U_w = I - 2|w><w|` is diagonal, so every entry of `U_w^2` is a single
+/// product and no counting is involved. `U_s = (2/N) J - I` is *dense*, so
+/// `(U_s^2)[x][y]` sums over all `N` intermediate indices and comes out exactly
+/// `I` only if every one of them is counted -- `J^2 = N J` is the whole
+/// identity. Both are checked as diagram equality against `mk_identity`, so a
+/// miscount cannot hide behind a value that merely looks close.
+///
+/// The reference C++ CFLOBDD fails exactly this: at 8 qubits its `U_s^2` counts
+/// 28, 156 and 158 intermediate indices for different entries instead of 256,
+/// which is what makes its Grover wrong from 16 qubits up. See BENCHMARKS.md.
+#[test]
+fn grover_operators_are_involutions() {
+    for level in 1..=4 {
+        let grammar = balanced_grammar(level);
+        // `level` gives 2^level variables, half of them row bits.
+        let dimension = 1usize << (1usize << (level - 1));
+        let context = RefCell::new(Context::default());
+        let identity = GcflobddT::mk_identity(1.0f64, 0.0, &grammar, &context);
+
+        // Every value below is a power of two, so f64 holds all of this
+        // exactly and the products must come out exactly 1.0 and 0.0.
+        let all_ones = GcflobddT::mk_constant(1.0f64, &grammar, &context);
+
+        // U_s = (2/N) J - I, dense, so every entry of the square sums over all
+        // N intermediate indices.
+        let diffusion = all_ones
+            .mk_scale(&(2.0 / dimension as f64), &context)
+            .mk_matadd(&identity.mk_scale(&-1.0, &context), &context);
+        assert_eq!(
+            diffusion.mk_matmul(&diffusion, &context),
+            identity,
+            "U_s^2 != I at dimension {dimension}"
+        );
+
+        // The multiplicity on its own: J^2 = N J, every entry exactly N.
+        assert_eq!(
+            all_ones.mk_matmul(&all_ones, &context).values(),
+            &[dimension as f64],
+            "J^2 should be the constant {dimension} at dimension {dimension}"
+        );
+
+        // U_w = I - 2|w><w|, marking the last index. Tabulated densely, so only
+        // while that is cheap -- the diagonal case is not the interesting one.
+        if dimension > 16 {
+            continue;
+        }
+        let mut rows = vec![vec![0.0f64; dimension]; dimension];
+        rows[dimension - 1][dimension - 1] = 1.0;
+        let projector = GcflobddT::from_matrix(&rows, &grammar, &context);
+        let oracle = identity.mk_matadd(&projector.mk_scale(&-2.0, &context), &context);
+        assert_eq!(
+            oracle.mk_matmul(&oracle, &context),
+            identity,
+            "U_w^2 != I at dimension {dimension}"
+        );
+    }
+}
