@@ -30,8 +30,9 @@ CPP_BIN=<c++ build> CPP_LABEL=cpp-fixed ONLY=cpp PMIN=2 PMAX=9 \
   OUT=results/grover_compare.csv scripts/compare_cflobdd.sh grover
 
 # Past 2046 qubits the theory check cannot run, so ask for a weaker one:
-#   <binary> testGroversAlgoBig <p> <seed> [theory | answer | none]
+#   <binary> testGroversAlgoBig <p | qN> <seed> [theory | answer | none]
 <bigint build> testGroversAlgoBig 14 1 answer      # 16384 qubits, 2.8 s
+<bigint build> testGroversAlgoBig q200 1           # 200 qubits, uneven grammar
 ```
 
 ## TL;DR
@@ -338,6 +339,67 @@ A Kronecker fold costs exactly two nodes per doubling. The dense random case is
 the algorithm's worst case by construction -- an unstructured matrix has nothing
 to share -- and is three orders of magnitude slower than the structured ones at
 the same dimension.
+
+## Grammar shape: any binary tree, not just the balanced one
+
+The deferred semiring never asks *where* a grouping divides its variables. It
+recurses on whatever two sub-grammars a rule names, multiplies their exit maps,
+and lifts the result -- so the only thing it needs is that the division fall
+between two `(row, column)` pairs rather than through one. In the interleaved
+order that is exactly: **every grammar node covers an even number of
+variables**. Balance, equal splits and power-of-two dimensions are not required
+and are never checked.
+
+That is what `check_matrix_grammar` in `src/gcflobdd/matmul/mod.rs` enforces,
+and all it enforces beyond the two structural conditions below. The one
+restriction that goes further than "even variables" is **binary groupings**: a
+GCFLOBDD rule may name `k > 2` symbols, giving a node `k` connection layers,
+but the block recursion here is two-dimensional -- an A-connection choosing the
+row/column block and B-connections filling it -- so `matmul` rejects wider
+rules. Leaves must be `S -> a a`, one qubit each. Lifting the arity restriction
+is a real extension, not a relaxation; nothing else is.
+
+**Verified, not just asserted.** `products_work_on_aligned_balanced_grammars`
+and `kron_splits_an_aligned_balanced_grammar_at_its_root` in
+`src/gcflobdd/matmul/tests.rs` build the aligned-balanced tree of
+`tests/n_queens.rs` over qubit counts whose every level divides unevenly -- 3
+into 2+1, 5 into 3+2, 7 into 4+3 -- and check `mk_matmul`, `mk_matvec` and
+`mk_kron` against dense oracles, plus the identity's neutrality and the
+mixed-product property as exact *diagram* equality, which also pins canonicity.
+
+**So the benchmark register is built that way.** `Register` in
+`tests/quantum.rs` splits a qubit count into its ceiling and floor halves down
+to one qubit's `S -> a a`. A power of two divides evenly at every level and
+reproduces the balanced family exactly -- all 114 recorded power-of-two runs
+above come back byte-identical after the change -- and any other count divides
+unevenly without the algebra noticing. Pass `qN` instead of `p` to ask for
+exactly `N` qubits.
+
+| qubits | grammar | time | diagram | verified |
+|--:|---|--:|--:|:-:|
+| 100 | 4 uneven splits | 8.0 ms | 192 | yes |
+| 128 | balanced | 9.2 ms | 200 | yes |
+| **200** | **4 uneven splits** | **13.3 ms** | **313** | **yes** |
+| 256 | balanced | 15.7 ms | 325 | yes |
+| 300 | 6 uneven splits | 13.9 ms | 451 | yes |
+| 500 | 6 uneven splits | 13.8 ms | 605 | yes |
+| 512 | balanced | 14.5 ms | 578 | yes |
+| 1000 | 6 uneven splits | 26.9 ms | 1,058 | yes |
+| 1024 | balanced | 29.0 ms | 1,011 | yes |
+
+Grover over 200 qubits, on the tree
+`200=100+100 100=50+50 50=25+25 25=13+12 13=7+6 12=6+6 7=4+3 6=3+3 4=2+2 3=2+1`,
+is fully verified against theory in 13 ms. An uneven count costs no more than
+the power of two above it, and its diagram lands between its two neighbours --
+the shape of the tree is not what the cost depends on.
+
+**One thing does still want a power: `n` itself must be even for Grover and
+QFT.** `sqrt(N) = 2^(n/2)` runs through Grover's iteration count, its initial
+amplitude and its theory check, and through QFT's `2^(-n/2)` normalisation, and
+every amplitude type here carries an *integer* exponent. That is the algorithms'
+arithmetic asking, not the representation: GHZ, Bernstein-Vazirani and
+Deutsch-Jozsa take any count at all, odd ones included, and the smoke test runs
+them at 5 and 7 qubits.
 
 ## Arbitrary-precision coefficients
 
