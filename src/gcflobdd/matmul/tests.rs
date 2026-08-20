@@ -959,3 +959,181 @@ fn kron_survives_gc() {
         "square after gc",
     );
 }
+
+/// The two Grover operators must each be their own inverse, and only one of
+/// those identities needs path multiplicities to be right.
+///
+/// `U_w = I - 2|w><w|` is diagonal, so every entry of `U_w^2` is a single
+/// product and no counting is involved. `U_s = (2/N) J - I` is *dense*, so
+/// `(U_s^2)[x][y]` sums over all `N` intermediate indices and comes out exactly
+/// `I` only if every one of them is counted -- `J^2 = N J` is the whole
+/// identity. Both are checked as diagram equality against `mk_identity`, so a
+/// miscount cannot hide behind a value that merely looks close.
+///
+/// The reference C++ CFLOBDD fails exactly this: at 8 qubits its `U_s^2` counts
+/// 28, 156 and 158 intermediate indices for different entries instead of 256,
+/// which is what makes its Grover wrong from 16 qubits up. See BENCHMARKS.md.
+#[test]
+fn grover_operators_are_involutions() {
+    for level in 1..=4 {
+        let grammar = balanced_grammar(level);
+        // `level` gives 2^level variables, half of them row bits.
+        let dimension = 1usize << (1usize << (level - 1));
+        let context = RefCell::new(Context::default());
+        let identity = GcflobddT::mk_identity(1.0f64, 0.0, &grammar, &context);
+
+        // Every value below is a power of two, so f64 holds all of this
+        // exactly and the products must come out exactly 1.0 and 0.0.
+        let all_ones = GcflobddT::mk_constant(1.0f64, &grammar, &context);
+
+        // U_s = (2/N) J - I, dense, so every entry of the square sums over all
+        // N intermediate indices.
+        let diffusion = all_ones
+            .mk_scale(&(2.0 / dimension as f64), &context)
+            .mk_matadd(&identity.mk_scale(&-1.0, &context), &context);
+        assert_eq!(
+            diffusion.mk_matmul(&diffusion, &context),
+            identity,
+            "U_s^2 != I at dimension {dimension}"
+        );
+
+        // The multiplicity on its own: J^2 = N J, every entry exactly N.
+        assert_eq!(
+            all_ones.mk_matmul(&all_ones, &context).values(),
+            &[dimension as f64],
+            "J^2 should be the constant {dimension} at dimension {dimension}"
+        );
+
+        // U_w = I - 2|w><w|, marking the last index. Tabulated densely, so only
+        // while that is cheap -- the diagonal case is not the interesting one.
+        if dimension > 16 {
+            continue;
+        }
+        let mut rows = vec![vec![0.0f64; dimension]; dimension];
+        rows[dimension - 1][dimension - 1] = 1.0;
+        let projector = GcflobddT::from_matrix(&rows, &grammar, &context);
+        let oracle = identity.mk_matadd(&projector.mk_scale(&-2.0, &context), &context);
+        assert_eq!(
+            oracle.mk_matmul(&oracle, &context),
+            identity,
+            "U_w^2 != I at dimension {dimension}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Arbitrary splits
+//
+// The deferred semiring never looks at *where* a grouping divides its
+// variables, only that the division falls between two (row, column) pairs. So
+// nothing here should require the two halves to be equal, or the tree to be
+// balanced, or the qubit count to be a power of two. These tests hold it to
+// that on the shape `tests/n_queens.rs` calls aligned-balanced, at counts whose
+// every level is uneven.
+// ---------------------------------------------------------------------------
+
+/// The aligned-balanced matrix grammars for every qubit count up to
+/// `max_qubits`, keyed by count.
+///
+/// Each count splits into its ceiling half and its floor half, down to one
+/// qubit's `S -> a a`. Built over *qubits* rather than variables, so every
+/// grouping covers an even number of variables however the count divides --
+/// which is the whole of what matmul asks. Equal counts share one `Rc`, so a
+/// parent really is the concatenation of its children and [`GcflobddT::mk_kron`]
+/// accepts it.
+fn aligned_balanced_family(max_qubits: usize) -> HashMap<usize, Grammar> {
+    fn build(qubits: usize, memo: &mut HashMap<usize, Grammar>) -> Grammar {
+        if let Some(grammar) = memo.get(&qubits) {
+            return grammar.clone();
+        }
+        let grammar = if qubits == 1 {
+            Grammar::new(&["S0 -> a a".to_string()]).unwrap()
+        } else {
+            let high = qubits.div_ceil(2);
+            build(high, memo).concat(&build(qubits - high, memo))
+        };
+        memo.insert(qubits, grammar.clone());
+        grammar
+    }
+    let mut memo = new_hash_map();
+    // Every count, not just those reached from `max_qubits`: building 7 alone
+    // visits 4, 3, 2 and 1 but never 5.
+    for qubits in 1..=max_qubits {
+        build(qubits, &mut memo);
+    }
+    memo
+}
+
+#[test]
+fn products_work_on_aligned_balanced_grammars() {
+    // 3 splits 2/1, 5 splits 3/2, 7 splits 4/3: uneven at the root and again
+    // below it, unlike anything in the balanced family.
+    let mut state = 0x51de_1ba7_c0de_face_u64;
+    let family = aligned_balanced_family(7);
+    for qubits in [1usize, 2, 3, 5, 7] {
+        let matrix = &family[&qubits];
+        assert_eq!(matrix.num_vars(), 2 * qubits);
+        let vector = matrix.halved();
+        let dimension = 1usize << qubits;
+        let context = RefCell::new(Context::default());
+
+        let a = random_matrix(dimension, &mut state, 7);
+        let b = random_matrix(dimension, &mut state, 7);
+        let v = random_vector(dimension, &mut state, 7);
+        let da = GcflobddT::from_matrix(&a, matrix, &context);
+        let db = GcflobddT::from_matrix(&b, matrix, &context);
+        let dv = GcflobddT::from_vector(&v, &vector, &context);
+
+        assert_entries(
+            &da.mk_matmul(&db, &context),
+            &dense_mul(&a, &b),
+            &format!("matmul over {qubits} qubits"),
+        );
+        assert_components(
+            &da.mk_matvec(&dv, &context),
+            &dense_matvec(&a, &v),
+            &format!("matvec over {qubits} qubits"),
+        );
+
+        // Canonicity, not just evaluation: over an uneven tree the identity
+        // must still be exactly neutral as a diagram.
+        let identity = GcflobddT::mk_identity(1i64, 0i64, matrix, &context);
+        assert_eq!(identity.mk_matmul(&da, &context), da, "I*A at {qubits}");
+        assert_eq!(da.mk_matmul(&identity, &context), da, "A*I at {qubits}");
+    }
+}
+
+#[test]
+fn kron_splits_an_aligned_balanced_grammar_at_its_root() {
+    // `aligned(5)` *is* `concat(aligned(3), aligned(2))`, so the Kronecker
+    // product of operands over the two children lands exactly on it -- an
+    // uneven split of a register into two uneven registers.
+    let mut state = 0xfeed_5eed_1234_abcd_u64;
+    let family = aligned_balanced_family(5);
+    let (ga, gb, combined) = (&family[&3], &family[&2], &family[&5]);
+    let context = RefCell::new(Context::default());
+
+    let a = random_matrix(8, &mut state, 5);
+    let b = random_matrix(4, &mut state, 5);
+    let da = GcflobddT::from_matrix(&a, ga, &context);
+    let db = GcflobddT::from_matrix(&b, gb, &context);
+    assert_entries(
+        &da.mk_kron(&db, combined, &context),
+        &dense_kron(&a, &b),
+        "kron over 3 + 2 qubits",
+    );
+
+    // The mixed-product property ties Kronecker back to matmul over the same
+    // uneven shapes: (A (x) B)(C (x) D) == (AC) (x) (BD).
+    let c = random_matrix(8, &mut state, 5);
+    let d = random_matrix(4, &mut state, 5);
+    let dc = GcflobddT::from_matrix(&c, ga, &context);
+    let dd = GcflobddT::from_matrix(&d, gb, &context);
+    let left = da
+        .mk_kron(&db, combined, &context)
+        .mk_matmul(&dc.mk_kron(&dd, combined, &context), &context);
+    let right =
+        da.mk_matmul(&dc, &context)
+            .mk_kron(&db.mk_matmul(&dd, &context), combined, &context);
+    assert_eq!(left, right, "(A x B)(C x D) != (AC) x (BD)");
+}

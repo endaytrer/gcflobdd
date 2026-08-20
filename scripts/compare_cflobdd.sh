@@ -16,6 +16,7 @@
 #   RUST_BIN  path to this crate's benchmark (default: newest target/release build)
 #   OUT       output CSV                     (default results/quantum_compare.csv)
 #   LABEL     name for this crate's rows     (default rust; e.g. rust-bigint)
+#   CPP_LABEL name for the reference's rows  (default cpp; e.g. cpp-fixed)
 #   ONLY      rust | cpp | both              (default both)
 #   APPEND    1 to add to an existing CSV rather than start one
 set -uo pipefail
@@ -25,6 +26,7 @@ CPP_BIN=${CPP_BIN:-$here/../cflobdd/CFLOBDD/cflobdd}
 RUST_BIN=${RUST_BIN:-}
 OUT=${OUT:-$here/results/quantum_compare.csv}
 LABEL=${LABEL:-rust}
+CPP_LABEL=${CPP_LABEL:-cpp}
 ONLY=${ONLY:-both}
 APPEND=${APPEND:-0}
 TIMEOUT=${TIMEOUT:-300}
@@ -41,12 +43,12 @@ fi
 
 mkdir -p "$(dirname "$OUT")"
 if [ "$APPEND" != 1 ] || [ ! -s "$OUT" ]; then
-  echo "impl,algo,p,qubits,seed,wall_s,peak_rss_kb,duration_ms,duration_us,nodes,edges,total,correct,status" > "$OUT"
+  echo "impl,algo,p,qubits,seed,wall_s,peak_rss_kb,duration_ms,duration_us,nodes,edges,total,correct,verified,status" > "$OUT"
 fi
 
 # Skip a side entirely when ONLY selects the other one.
 run_rust() { [ "$ONLY" = cpp  ] || run "$LABEL" "$RUST_BIN" "$@"; }
-run_cpp()  { [ "$ONLY" = rust ] || run cpp      "$CPP_BIN"  "$@"; }
+run_cpp()  { [ "$ONLY" = rust ] || run "$CPP_LABEL" "$CPP_BIN"  "$@"; }
 
 tmp_out=$(mktemp); tmp_time=$(mktemp)
 trap 'rm -f "$tmp_out" "$tmp_time"' EXIT
@@ -75,6 +77,17 @@ run() {
   elif grep -q "^is_correct: " "$tmp_out"; then correct=$(grep -m1 "^is_correct: " "$tmp_out" | awk '{print $2}')
   fi
 
+  # Grover here also checks the *whole* state against theory, not just that the
+  # peak landed on the right string -- a partially amplified state still peaks
+  # correctly, which is how the reference's failure hides. `na` for everything
+  # else, including every reference run.
+  # `matches theory: na` means the run was told not to verify, so leave the
+  # column at na rather than recording an empty field.
+  local verified=na
+  if grep -q "matches theory: [01]" "$tmp_out"; then
+    verified=$(grep -m1 -o "matches theory: [01]" "$tmp_out" | awk '{print $3}')
+  fi
+
   local dur= us= nodes= edges= total=
   if grep -q "^Duration: " "$tmp_out"; then
     local line; line=$(grep -m1 "^Duration: " "$tmp_out")
@@ -87,9 +100,9 @@ run() {
     us=$(   sed -n 's/.*durationUs: \([0-9]*\).*/\1/p'  <<<"$line")
   fi
 
-  echo "$impl,$label,$p,$qubits,${seed:-na},$wall,$rss,$dur,$us,$nodes,$edges,$total,$correct,$status" >> "$OUT"
-  printf '%-5s %-4s p=%-2s q=%-4s seed=%-3s %-8s correct=%-3s %sus (wall %ss)\n' \
-    "$impl" "$label" "$p" "$qubits" "${seed:-na}" "$status" "$correct" "${us:-${dur:-?}000}" "${wall:-?}"
+  echo "$impl,$label,$p,$qubits,${seed:-na},$wall,$rss,$dur,$us,$nodes,$edges,$total,$correct,$verified,$status" >> "$OUT"
+  printf '%-5s %-4s p=%-2s q=%-4s seed=%-3s %-8s correct=%-3s verified=%-3s %sus (wall %ss)\n' \
+    "$impl" "$label" "$p" "$qubits" "${seed:-na}" "$status" "$correct" "$verified" "${us:-${dur:-?}000}" "${wall:-?}"
 
   [ "$status" = ok ]
 }
@@ -126,6 +139,40 @@ for spec in "bv testBVAlgo $PMAX" "dj testDJAlgo $PMAX" "qft testQFT 6"; do
     [ $rust_done -eq 1 ] && [ $cpp_done -eq 1 ] && break
   done
 done
+
+# --- Grover -----------------------------------------------------------------
+# The one algorithm whose cost is exponential whatever the representation, so
+# the ladder is short and driven by GROVER_PMAX rather than PMAX.
+#
+# GROVER_MODE picks this crate's variant, since the two implementations do not
+# agree on how to reach M^k:
+#   testGroversAlgo      honest iteration, f64
+#   testGroversAlgoFast  operator exponentiation, f64        (the reference's shape)
+#   testGroversAlgoBig   operator exponentiation, wide float (the default here)
+#
+# A wrong answer does *not* stop the ladder: for the reference it is the result
+# being measured, so the loop only stops on a run that fails to finish.
+if want grover "${ALGOS[@]}"; then
+  GROVER_MODE=${GROVER_MODE:-testGroversAlgoBig}
+  case $GROVER_MODE in
+    testGroversAlgo)     rust_label=grover-iterate ;;
+    testGroversAlgoFast) rust_label=grover-fast ;;
+    *)                   rust_label=grover-big ;;
+  esac
+  cap=${GROVER_PMAX:-6}
+  rust_done=0; cpp_done=0
+  [ "$ONLY" = rust ] && cpp_done=1
+  [ "$ONLY" = cpp  ] && rust_done=1
+  for p in $(seq "$PMIN" "$(( PMAX < cap ? PMAX : cap ))"); do
+    for s in $SEEDS; do
+      # `run` only reports failure for a run that did not finish, so a wrong
+      # answer carries on to the next size, as it must.
+      [ $rust_done -eq 1 ] || run_rust "$rust_label" "$GROVER_MODE" "$p" "$s" || rust_done=1
+      [ $cpp_done  -eq 1 ] || run_cpp  grover testGroversAlgo "$p" "$s" || cpp_done=1
+    done
+    [ $rust_done -eq 1 ] && [ $cpp_done -eq 1 ] && break
+  done
+fi
 
 echo
 echo "wrote $OUT"

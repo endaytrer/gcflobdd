@@ -246,7 +246,34 @@ impl<'grammar, T> GcflobddT<'grammar, T> {
 impl<'grammar, T: Eq> GcflobddT<'grammar, T> {
     pub fn find_one_path_to(&self, value: &T) -> Option<Vec<Option<bool>>> {
         let index = inverse_lookup(&self.connection.return_map, value)?;
-        Some(self.connection.entry_point.find_one_path_to(index))
+        Some(self.find_one_path_to_index(index))
+    }
+}
+impl<'grammar, T> GcflobddT<'grammar, T> {
+    /// The distinct values this diagram takes, in canonical order -- the order
+    /// in which a traversal first reaches them.
+    ///
+    /// The whole range of the function, however wide its domain: a diagram over
+    /// 65,536 variables still lists only the handful of values it can actually
+    /// produce. Pair with
+    /// [`find_one_path_to_index`](Self::find_one_path_to_index) to get back an
+    /// assignment producing one of them.
+    pub fn values(&self) -> &[T] {
+        &self.connection.return_map
+    }
+
+    /// One assignment mapping to [`values()`](Self::values)`[index]`, with
+    /// `None` for the variables that assignment does not constrain.
+    ///
+    /// Unlike [`find_one_path_to`](Self::find_one_path_to) this needs no `Eq`,
+    /// which matters for float-valued diagrams where equality is a trap.
+    pub fn find_one_path_to_index(&self, index: usize) -> Vec<Option<bool>> {
+        assert!(
+            index < self.connection.return_map.len(),
+            "value index {index} is outside this diagram's {} values",
+            self.connection.return_map.len()
+        );
+        self.connection.entry_point.find_one_path_to(index)
     }
 }
 impl<'grammar, T: Clone> GcflobddT<'grammar, T> {
