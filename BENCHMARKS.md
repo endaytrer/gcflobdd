@@ -11,7 +11,10 @@ Quantum-algorithm and matrix-operation benchmarks, measured against
 Reproduce with:
 
 ```bash
-# the full ladder, 2 to 65536 qubits, both implementations
+# the full ladder, 2 to 65536 qubits, both implementations.  `ghz` runs two
+# ladders on this crate's side: `testGHZAlgoMatrix` (labelled `ghz`, the
+# reference's construction, the row comparable with it) and `testGHZAlgo`
+# (labelled `ghz-vec`, the textbook state-vector circuit).
 LABEL=rust-bigint ONLY=rust RUST_BIN=<bigint build> PMAX=16 SEEDS=1 \
   OUT=results/ladder.csv scripts/compare_cflobdd.sh ghz bv dj
 ONLY=cpp PMAX=16 SEEDS=1 APPEND=1 OUT=results/ladder.csv scripts/compare_cflobdd.sh ghz bv dj
@@ -42,7 +45,7 @@ every size from 2 to **65536 qubits**. At the top of that ladder:
 
 | | this crate | reference C++ | |
 |---|--:|--:|---|
-| **GHZ**, 65536 qubits | 2.18 s | 2.35 s | parity |
+| **GHZ**, 65536 qubits | 2.18 s | 2.35 s | different circuits; see *GHZ* |
 | **Bernstein-Vazirani**, 65536 qubits | **167 ms** | 429 ms | **2.6x** |
 | **Deutsch-Jozsa**, 65536 qubits | **24 ms** | 89 ms | **3.8x** |
 | **QFT**, 16 qubits | **102 ms** | 194 ms | **1.9x** |
@@ -50,19 +53,50 @@ every size from 2 to **65536 qubits**. At the top of that ladder:
 | **Grover**, 512 qubits | **18 ms** | 115 ms | **6.3x** |
 | **Grover**, 1024 qubits | **35 ms** | segfaults | |
 | **Grover**, 16384 qubits | **2.8 s** | out of reach | |
-| GHZ diagram, 65536 qubits | **216** | 914 | 4.2x smaller |
-| BV diagram, 65536 qubits | **33,493** | 58,799 | 1.8x smaller |
-| QFT diagram, 16 qubits | **287** | 132,238 | 461x smaller |
-| Grover diagram, 512 qubits | **570** | 1,028 | 1.8x smaller |
 | peak RSS, 65536 qubits | **392-737 MB** | 987-1091 MB | |
+
+> **Correction: this document's diagram-size comparisons do not hold.** Every
+> "size" figure below is each implementation's *own* counter, and the two do not
+> count the same thing. The reference counts two edges per connection plus the
+> entries of every distinct return map; this crate counts one edge per
+> connection and no return maps at all. A ratio between those two numbers is a
+> ratio between two counters, not between two diagrams.
+>
+> Counted the same way -- both under the reference's convention, via
+> `count_cflobdd_convention`, on an M1 Pro, and with GHZ built the same way on
+> both sides:
+>
+> | | this crate | reference C++ |
+> |---|--:|--:|
+> | GHZ, 65536 qubits | 846 | 914 |
+> | Bernstein-Vazirani, 65536 qubits | 58,620 | 58,799 |
+> | Deutsch-Jozsa, 65536 qubits | 399 | 338 |
+> | QFT, 16 qubits | 131,917 | 132,238 |
+> | Grover, 512 qubits | 998 | 1,038 |
+>
+> **At the top of every ladder the two representations produce diagrams of the
+> same size** -- within 7% on four of the five, and on Deutsch-Jozsa this
+> crate's is 18% *larger*. None of the "1.8x", "2x", "4.2x" or "461x" claimed
+> below survives; small-size rows still differ by up to about 2.5x, in this
+> crate's favour. What does survive is the runtime and the reach: this crate is
+> faster on BV, DJ, QFT and Grover, and still running where the reference has
+> crashed or run out of memory.
+>
+> The size columns below are left as measured -- they are correct in this
+> crate's own convention, and comparable along a ladder -- and the prose after
+> each one now says what the like-for-like number is. Both conventions for both
+> implementations are in `results/macos-m1pro/counting_convention.csv`; the full
+> corrected table is `results/macos-m1pro/all_results.csv`.
 
 Every run finishes inside 5 s wall-clock, the largest being GHZ at 2.8 s.
 
 **Where each wins.** This crate is faster on BV, DJ and QFT at every size --
 1.4x to 8x, the wider ratios at small sizes partly an artefact of the
-reference's millisecond timer -- and holds a 1.8x to 4x smaller diagram
-throughout. GHZ is a tie: the two trade places by ±16% from 512 qubits up,
-because that circuit is `n` sequential gates for both. Neither implementation
+reference's millisecond timer. It does *not* hold a smaller diagram: counted the
+same way the two are within a few percent everywhere (see the correction above).
+GHZ's row is not a comparison at all as it stands -- the two sides
+run different constructions; running the reference's on both puts them level,
+at the same diagram size (see *GHZ*). Neither implementation
 now reaches further than the other on those four: the `i128` ceiling that used
 to stop BV and DJ at 64 qubits is gone (see *Arbitrary-precision coefficients*).
 
@@ -79,9 +113,10 @@ every size to 1024 qubits, and answers correctly under a weaker check to
 ## Results
 
 Times are each implementation's *own* internal timer around the same phase of
-the algorithm. Size is nodes+edges of the result diagram (`CountNodesAndEdges`
-there, `count_nodes_and_edges` here). One seed per size; `results/ladder.csv`
-has every run.
+the algorithm. Size is nodes+edges of the result diagram, each side under its
+own counter (`CountNodesAndEdges` there, `count_nodes_and_edges` here) -- see
+the correction above before comparing the two columns. One seed per size;
+`results/ladder.csv` has every run.
 
 ### GHZ
 
@@ -94,9 +129,53 @@ has every run.
 | 65536 | 2184 ms | 2350 ms | 1.1x | **216** | 914 |
 
 Both diagrams are logarithmic: the reference gains 56 nodes+edges per doubling
-of the qubit count, this crate 14. Runtime is linear in qubits for both, since
-the circuit is a chain of `n` CNOTs applied one at a time. Neither implementation
-has a structural edge here, and the ratio wanders around 1.0 accordingly.
+of the qubit count, this crate 14. Runtime is linear in qubits for both -- `n`
+gate applications here, `n` matrix multiplies there -- and the ratio wanders
+around 1.0, but the two are not doing the same `n` things:
+
+**neither the size nor the time column above is a like-for-like comparison, and
+the size gap is not compression.** Two things separate them, and neither is the
+representation:
+
+1. The two harnesses count differently (see the correction under *TL;DR*).
+2. The two build different objects. `testGHZAlgo` here is the textbook circuit
+   on an `n`-variable state *vector*. `QuantumAlgos::GHZ` there works at
+   `level = ceil(log2 n) + 2` -- `4n` variables, an operator on a `2n`-qubit
+   register -- multiplying `n` CNOT matrices together and applying the product
+   to a basis vector. The GHZ state it wants sits on qubits `0..=n` inside that
+   operator, whose remaining `n-1` row bits and `n` column bits are free.
+
+`testGHZAlgoMatrix` builds the reference's object instead, so that the two can
+be compared. It postdates the Fedora run, whose `results/ladder.csv` `ghz` rows
+are therefore all `testGHZAlgo`; in `results/macos-m1pro/ladder.csv` the two
+ladders are `ghz` and `ghz-vec`. Measured on an M1 Pro, with both diagrams
+counted the reference's way:
+
+| qubits | this crate, nodes | c++ nodes | this crate, nodes+edges | c++ nodes+edges | this crate | c++ |
+|--:|--:|--:|--:|--:|--:|--:|
+| 8 | 27 | 27 | 170 | 186 | 0.46 ms | 1 ms |
+| 256 | 67 | 67 | 430 | 466 | 5.5 ms | 7 ms |
+| 4096 | 99 | 99 | 638 | 690 | 91 ms | 89 ms |
+| 65536 | 131 | 131 | 846 | 914 | **1.58 s** | 1.65 s |
+
+**The node counts are equal at every size on the ladder.** The whole of the
+apparent 4.2x was the two differences above. What is left is `4` edges per
+level, and it is an accounting difference too: the reference materialises a
+no-distinction node as an internal node with two connections at every level,
+where this crate has one `DontCare` node type carrying no connections at all.
+
+**Head to head on the same object, the two are level** -- 1.58 s against 1.65 s
+at 65536 qubits, and within a few percent from 1024 up. That was not true when
+this comparison was first run: building the reference's object took 6.16 s here,
+3.6x behind, and every bit of the gap was in constructing the gates rather than
+multiplying them. See *A controlled gate is one node, not a sum of two towers*
+below for what closed it.
+
+The construction still costs what it should against this crate's own
+state-vector run -- 1.58 s against 1.02 s, 1.55x -- because `n` matrix-matrix
+multiplies over a `2n`-qubit register is more work than `n` matrix-vector
+products over `n` variables. That is why `testGHZAlgo` remains what this crate
+would actually run, and why its row is kept.
 
 ### Bernstein-Vazirani
 
@@ -108,10 +187,11 @@ has a structural edge here, and the ratio wanders around 1.0 accordingly.
 | 16384 | 43 ms | 110 ms | 2.5x | 9,385 | 16,540 |
 | 65536 | **167 ms** | 429 ms | **2.6x** | 33,493 | 58,799 |
 
-A steady 2.3-2.6x from 256 qubits up, with the diagram consistently 1.8x
-smaller. BV's diagram *must* grow linearly -- it encodes the planted secret, `n`
-incompressible bits -- and both implementations are within a constant factor of
-that bound.
+A steady 2.3-2.6x from 256 qubits up. The size columns are two different
+counters and the apparent 1.8x is theirs, not the diagrams': counted the same
+way it is 58,620 against 58,799 at 65536 qubits, a 0.3% difference. BV's diagram
+*must* grow linearly -- it encodes the planted secret, `n` incompressible bits
+-- and both implementations sit on that bound.
 
 ### Deutsch-Jozsa
 
@@ -124,6 +204,9 @@ that bound.
 | 65536 | **24 ms** | 89 ms | **3.8x** | 225 | 338 |
 
 The widest sustained margin, at a diagram that stays logarithmic on both sides.
+This is the one algorithm where counting both the same way leaves this crate's
+diagram *larger*: 399 against 338 at 65536 qubits. The size columns' apparent
+1.5x the other way is the counter.
 
 ### QFT
 
@@ -139,9 +222,14 @@ that does *not* need arbitrary precision -- 16 qubits is far below the `i128`
 ceiling -- and it runs about 1.5x faster without it, the largest `bigint`
 overhead measured anywhere.
 
-QFT is also where the representations diverge most: the reference's diagram goes
-644 -> 132,238 nodes+edges from 8 to 16 qubits and then out of memory, while
-this crate's stays at 287. Both fail at 32 qubits -- the reference on memory,
+QFT is where the two counters diverge most, and it is worth being precise about
+what that does and does not show. The reference's diagram goes 644 -> 132,238
+nodes+edges from 8 to 16 qubits and then out of memory, while this crate's
+*counter* reports 287. But a Fourier-transformed state's return maps outweigh
+everything structural in it by two orders of magnitude, and this crate's counter
+does not count return maps: counted the reference's way, this crate's diagram is
+131,917 -- a 0.2% difference, not 461x. Both implementations blow up on this
+state in the same way. Both then fail at 32 qubits -- the reference on memory,
 this crate on time.
 
 ### Grover
@@ -189,7 +277,8 @@ timer makes the 4- and 8-qubit ratios unreliable, since 2 ms there is one tick.
 The gap reopens at the top: 2.9x at 256 qubits and 6.3x at 512, because the
 reference's cost per doubling grows faster than this crate's. It then crashes
 with `SIGSEGV` at 1024 qubits, on all three seeds, about 2 s in. The diagram is
-consistently about 2x smaller here at every size.
+not smaller: the 2x in the size columns is the counter, and counted the same way
+it is 998 against 1,038 at 512 qubits.
 
 At 1024 qubits this crate is searching `2^1024` items -- `1.05 * 10^154`
 iterations of the Grover operator, an exact 512-bit integer -- in 35 ms and
@@ -438,8 +527,12 @@ double-precision complex.
 
 ## What made the difference
 
-Four changes came out of profiling this comparison. The first two are in the
-library; the last two are in how the benchmark drives it.
+Five changes came out of profiling this comparison. Three are in the library
+(1, 2 and 4); the others are in how the benchmark drives it.
+
+Change 4 postdates the Fedora run, so the Fedora timings in *Results* above are
+from before it. The macOS figures in `results/macos-m1pro/` are from after, and
+the diagrams are unchanged either way.
 
 1. **Hashed value interning** (`ValueSet` in `src/gcflobdd/matmul/mod.rs`).
    Collapsing equal exit values used a linear scan, quadratic in the exit count.
@@ -458,7 +551,29 @@ library; the last two are in how the benchmark drives it.
    node is `O(n^2)` for a full `n`-qubit layer -- fine at 256 qubits, hopeless
    at 65536. Splitting a sorted slice at each level makes it `O(n log n)`.
 
-4. **Folding uniform layers by doubling** (`uniform`). A Hadamard layer has `n`
+4. **A controlled gate is one node, not a sum of two towers**
+   (`GcflobddT::mk_controlled`, `src/gcflobdd/matmul/controlled.rs`). Building
+   `|0><0|_c (x) I + |1><1|_c (x) U_t` from its definition costs two `place`
+   towers over the whole register and a matrix addition, per gate -- and these
+   circuits place one controlled gate per qubit. At 16384 qubits that was 1.03 s
+   of GHZ's 1.34 s, against 0.27 s for all the matrix multiplies it fed; a
+   `sample` profile put the rest in `kron_node`/`substitute` and allocation
+   underneath them. Building the node in one downward pass instead, the way the
+   reference's `MkCNOTNode` does, and caching it on `(grouping, role)`:
+   **GHZ at 65536 qubits, 6.16 s -> 1.58 s, 3.9x**, which is what took it from
+   3.6x behind the reference to level with it. Deutsch-Jozsa's wall clock, most
+   of which is the oracle it builds outside the timed region, fell 3.5x with it.
+
+   The recursion carries *tags* rather than numbers -- what each exit means, not
+   what it is worth -- so one cached node serves a CNOT, a controlled phase and
+   every amplitude type, and the values are substituted once at the top. Every
+   diagram in this document is byte-identical before and after: `smoke` checks
+   the direct construction against the sum it replaces for every control/target
+   pair on 2 to 8 qubits, and `controlled_is_the_canonical_node` checks it
+   against the tabulated dense matrix, which is pointer equality on the interned
+   node.
+
+5. **Folding uniform layers by doubling** (`uniform`). A Hadamard layer has `n`
    identical factors, so it is `log n` squarings, not `n` placements. This is
    what the reference's `KroneckerPower` does. **DJ at 4096 qubits, 10.3 ms ->
    1.7 ms, 6.1x**; it turned DJ at 65536 from a 1.8x loss into a 3.8x win.
@@ -471,17 +586,22 @@ These matter for reading the numbers honestly.
   rounded 1-4 ms and the small-size ratios are real but imprecise. This crate
   reports microseconds (`durationUs`). The large-size rows, where both are tens
   of milliseconds or more, are the trustworthy ones.
-- **The circuits are not identical.** GHZ here is the textbook circuit -- H then
-  a CNOT chain over `n` qubits, applied gate by gate; the reference multiplies
-  `n` CNOT matrices together over a `2n`-qubit register and applies the product.
-  Same state, different work. BV and DJ *do* follow the reference's structure,
-  including building the oracle outside the timed region, as it does -- which is
-  why their wall-clock (4.3-4.7 s at 65536 qubits) far exceeds the timed region.
+- **The circuits are not identical.** GHZ in the rows above is the textbook
+  circuit -- H then a CNOT chain over `n` qubits, applied gate by gate; the
+  reference multiplies `n` CNOT matrices together over a `2n`-qubit register and
+  applies the product. Same state, different work, and a different object at the
+  end. `testGHZAlgoMatrix` runs the reference's construction for a like-for-like
+  comparison; *GHZ* above has it. BV and DJ *do* follow the reference's
+  structure, including building the oracle outside the timed region, as it does
+  -- which is why their wall-clock (4.3-4.7 s at 65536 qubits) far exceeds the
+  timed region.
 - **A state stays a vector here.** `mk_matvec` keeps a state at `n` variables;
   the reference pads it into a `2n`-variable matrix and uses matrix multiply.
   That is a real advantage of this crate's API, not a measurement artifact, but
   it does mean less work per gate.
-- **Value types differ.** Exact integers (BV, DJ), `f64` (GHZ) and a hand-rolled
+- **Value types differ.** Exact integers (BV, DJ, and GHZ under
+  `testGHZAlgoMatrix`, whose surviving entries are exactly `2^n`), `f64` (GHZ
+  under `testGHZAlgo`) and a hand-rolled
   double-precision complex (QFT) here; `cpp_dec_float` and `cpp_complex_100`
   there. The reference is carrying 100-digit floats where this crate carries
   machine words or exact integers. It is a small part of either profile --

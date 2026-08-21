@@ -1,0 +1,79 @@
+algorithm,qubits,gcflobdd_ms,gcflobdd_size,gcflobdd_correct,cflobdd_ms,cflobdd_size,cflobdd_correct,cudd_ms,cudd_nodes,cudd_status,seeds
+GHZ,2,0.308,73,1/1,2,81,1/1,0.1218,8,ok,1
+GHZ,4,0.288,118,1/1,1,130,1/1,0.1248,12,ok,1
+GHZ,8,0.463,170,1/1,1,186,1/1,0.1704,20,ok,1
+GHZ,16,0.619,222,1/1,2,242,1/1,0.3842,36,ok,1
+GHZ,32,0.967,274,1/1,2,298,1/1,1.64,68,ok,1
+GHZ,64,1.779,326,1/1,3,354,1/1,5.981,132,ok,1
+GHZ,128,2.974,378,1/1,4,410,1/1,38.83,260,ok,1
+GHZ,256,5.466,430,1/1,7,466,1/1,231.8,516,ok,1
+GHZ,512,10.52,482,1/1,12,522,1/1,,,exit134,1
+GHZ,1024,22.29,534,1/1,22,578,1/1,,,not run,1
+GHZ,2048,43.77,586,1/1,45,634,1/1,,,not run,1
+GHZ,4096,90.58,638,1/1,89,690,1/1,,,not run,1
+GHZ,8192,191.9,690,1/1,188,746,1/1,,,not run,1
+GHZ,16384,376,742,1/1,391,802,1/1,,,not run,1
+GHZ,32768,782.6,794,1/1,777,858,1/1,,,not run,1
+GHZ,65536,1577,846,1/1,1652,914,1/1,,,not run,1
+GHZ (state vector),2,0.074,14,1/1,,,,,,not run,1
+GHZ (state vector),4,0.107,46,1/1,,,,,,not run,1
+GHZ (state vector),8,0.196,70,1/1,,,,,,not run,1
+GHZ (state vector),16,0.319,94,1/1,,,,,,not run,1
+GHZ (state vector),32,0.486,118,1/1,,,,,,not run,1
+GHZ (state vector),64,0.9,142,1/1,,,,,,not run,1
+GHZ (state vector),128,1.709,166,1/1,,,,,,not run,1
+GHZ (state vector),256,3.387,190,1/1,,,,,,not run,1
+GHZ (state vector),512,6.331,214,1/1,,,,,,not run,1
+GHZ (state vector),1024,13.14,238,1/1,,,,,,not run,1
+GHZ (state vector),2048,24.52,262,1/1,,,,,,not run,1
+GHZ (state vector),4096,55.12,286,1/1,,,,,,not run,1
+GHZ (state vector),8192,117.8,310,1/1,,,,,,not run,1
+GHZ (state vector),16384,234.6,334,1/1,,,,,,not run,1
+GHZ (state vector),32768,545.3,358,1/1,,,,,,not run,1
+GHZ (state vector),65536,1018,382,1/1,,,,,,not run,1
+Bernstein-Vazirani,2,0.13,37,1/1,2,74,1/1,0.01063,7,ok,1
+Bernstein-Vazirani,4,0.18,65,1/1,1,100,1/1,0.01967,11,ok,1
+Bernstein-Vazirani,8,0.231,103,1/1,1,146,1/1,0.03167,19,ok,1
+Bernstein-Vazirani,16,0.37,148,1/1,1,209,1/1,0.5401,35,ok,1
+Bernstein-Vazirani,32,0.569,214,1/1,1,272,1/1,,,timeout,1
+Bernstein-Vazirani,64,0.736,294,1/1,2,370,1/1,,,not run,1
+Bernstein-Vazirani,128,1.209,458,1/1,3,524,1/1,,,not run,1
+Bernstein-Vazirani,256,2.025,692,1/1,4,776,1/1,,,not run,1
+Bernstein-Vazirani,512,3.534,1150,1/1,6,1231,1/1,,,not run,1
+Bernstein-Vazirani,1024,6.238,1923,1/1,11,2001,1/1,,,not run,1
+Bernstein-Vazirani,2048,11.28,3270,1/1,19,3401,1/1,,,not run,1
+Bernstein-Vazirani,4096,22,5485,1/1,36,5627,1/1,,,not run,1
+Bernstein-Vazirani,8192,38.35,9268,1/1,60,9379,1/1,,,not run,1
+Bernstein-Vazirani,16384,69.52,16432,1/1,113,16540,1/1,,,not run,1
+Bernstein-Vazirani,32768,139.5,30624,1/1,235,30715,1/1,,,not run,1
+Bernstein-Vazirani,65536,255.1,58620,1/1,463,58799,1/1,,,not run,1
+Deutsch-Jozsa,2,0.093,35,1/1,1,53,1/1,0.01571,6,ok,1
+Deutsch-Jozsa,4,0.14,63,1/1,1,72,1/1,0.02279,18,ok,1
+Deutsch-Jozsa,8,0.179,87,1/1,1,91,1/1,0.1785,233,ok,1
+Deutsch-Jozsa,16,0.244,111,1/1,1,110,1/1,250,53517,ok,1
+Deutsch-Jozsa,32,0.279,135,1/1,1,129,1/1,,,timeout,1
+Deutsch-Jozsa,64,0.334,159,1/1,1,148,1/1,,,not run,1
+Deutsch-Jozsa,128,0.409,183,1/1,1,167,1/1,,,not run,1
+Deutsch-Jozsa,256,0.502,207,1/1,2,186,1/1,,,not run,1
+Deutsch-Jozsa,512,0.683,231,1/1,2,205,1/1,,,not run,1
+Deutsch-Jozsa,1024,1.126,255,1/1,3,224,1/1,,,not run,1
+Deutsch-Jozsa,2048,1.427,279,1/1,5,243,1/1,,,not run,1
+Deutsch-Jozsa,4096,2.368,303,1/1,9,262,1/1,,,not run,1
+Deutsch-Jozsa,8192,4.348,327,1/1,15,281,1/1,,,not run,1
+Deutsch-Jozsa,16384,8.489,351,1/1,32,300,1/1,,,not run,1
+Deutsch-Jozsa,32768,15.83,375,1/1,60,319,1/1,,,not run,1
+Deutsch-Jozsa,65536,30.85,399,1/1,121,338,1/1,,,not run,1
+QFT,2,0.112,16,3/3,0,40,na,,,ok,3
+QFT,4,0.255,27,3/3,0,80,na,,,ok,3
+QFT,8,1.025,336,3/3,2,644,na,,,ok,3
+QFT,16,94.78,131917,3/3,263,132238,na,,,timeout,3
+Grover,2,,,,,,,0.1216,4,ok,
+Grover,4,0.367,29,10/10,2,47,10/10,0.1926,9,ok,10
+Grover,8,0.7275,50,10/10,2,73,10/10,2.547,16,ok,10
+Grover,16,1.537,90,10/10,3,110,10/10,312.2,95,ok,10
+Grover,32,2.776,140,10/10,5,161,10/10,,,timeout,10
+Grover,64,3.838,218,10/10,7,250,10/10,,,not run,10
+Grover,128,6.511,359,10/10,13,388,10/10,,,not run,10
+Grover,256,13.44,587,10/10,45,624,10/10,,,not run,10
+Grover,512,20.46,998,10/10,193,1038,10/10,,,not run,10
+Grover,1024,44.82,1765,10/10,,,na,,,not run,10

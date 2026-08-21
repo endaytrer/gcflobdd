@@ -1,1 +1,4 @@
 /target
+__pycache__/
+.DS_Store
+results/*/cudd_logs/
