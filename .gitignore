@@ -2,3 +2,15 @@
 __pycache__/
 .DS_Store
 results/*/cudd_logs/
+
+# network-verification harness: build output and generated datasets.  The
+# datasets are reproducible from their seed (bench/netverify/README.md records
+# the exact commands), so they are regenerated rather than tracked.
+/gcflobdd-jni/target
+bench/netverify/classes/
+bench/netverify/lib/
+bench/netverify/data/
+bench/netverify/env.sh
+
+# local venv for the plotting scripts (matplotlib)
+/.venv/

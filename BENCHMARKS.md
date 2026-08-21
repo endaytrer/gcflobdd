@@ -12,6 +12,10 @@ Apple clang 21.0.0 with Boost 1.89.0. CUDD 3.0.0 (`--enable-obj`).
 
 Raw runs, scripts and figures are in [`results/macos-m1pro/`](results/macos-m1pro).
 
+Network verification -- atomic predicates and reachability, measured against NDD
+and a plain BDD -- is a separate workload with a separate write-up:
+[`NETWORK.md`](NETWORK.md).
+
 ```bash
 # the ladder, 2 to 65536 qubits, both implementations
 LABEL=rust-bigint ONLY=rust RUST_BIN=<bigint build> PMAX=16 SEEDS=1 \

@@ -32,8 +32,16 @@ pub enum GrammarConfig {
     /// Config 1 (NDD-like): one ordinary-BDD leaf per field.
     FieldGrouped,
     /// Config 2 (aligned-balanced): a balanced binary tree recursed to single
-    /// bits, with every coarse split forced onto a field boundary.
+    /// bits, with every coarse split forced onto a field boundary. Each field
+    /// gets its own symbols, so equal-width subtrees are distinct grammar nodes.
     AlignedBalanced,
+    /// Config 3 (aligned-balanced, width-shared): the same tree shape and the
+    /// same field boundaries as [`Self::AlignedBalanced`], but every subtree of
+    /// a given width is *one* grammar node shared by all five fields. Node
+    /// identity in a GCFLOBDD is keyed on the grammar node's address, so this is
+    /// what lets a src_ip subdiagram share nodes with a dst_port one -- the
+    /// analogue of NDD's right-aligned shared variable pool.
+    AlignedBalancedShared,
 }
 
 impl GrammarConfig {
@@ -42,6 +50,7 @@ impl GrammarConfig {
         match v {
             0 => Some(Self::FieldGrouped),
             1 => Some(Self::AlignedBalanced),
+            2 => Some(Self::AlignedBalancedShared),
             _ => None,
         }
     }
@@ -147,10 +156,32 @@ fn build_aligned_balanced() -> Grammar {
     Grammar::new(&rules).expect("aligned-balanced grammar is well-formed")
 }
 
+/// Config 3: aligned-balanced with width-shared subtrees. Same shape as
+/// [`build_aligned_balanced`] -- the coarse rules split only on field boundaries
+/// and every field is a perfect binary tree of single bits -- but a subtree of a
+/// given width is named once (`W32`, `W16`, ...) and reused by every field of
+/// that width, so the five fields share grammar nodes instead of each owning a
+/// private copy.
+fn build_aligned_balanced_shared() -> Grammar {
+    Grammar::new(&[
+        "S -> A B".to_string(),    // 104 = 64 | 40
+        "A -> W32 W32".to_string(), // srcip | dstip     (64 = 32 | 32)
+        "B -> W16 C".to_string(),   // srcport | rest    (40 = 16 | 24)
+        "C -> W16 W8".to_string(),  // dstport | proto   (24 = 16 | 8)
+        "W32 -> W16 W16".to_string(),
+        "W16 -> W8 W8".to_string(),
+        "W8 -> W4 W4".to_string(),
+        "W4 -> W2 W2".to_string(),
+        "W2 -> a a".to_string(),
+    ])
+    .expect("width-shared aligned-balanced grammar is well-formed")
+}
+
 fn build_grammar(config: GrammarConfig) -> Grammar {
     match config {
         GrammarConfig::FieldGrouped => build_field_grouped(),
         GrammarConfig::AlignedBalanced => build_aligned_balanced(),
+        GrammarConfig::AlignedBalancedShared => build_aligned_balanced_shared(),
     }
 }
 
@@ -280,6 +311,22 @@ impl Engine {
         self.intern(res)
     }
 
+    /// `a AND NOT b`. The hot operation in atomic-predicate splitting; done here
+    /// it costs one JNI crossing and one cached `mk_and` instead of two.
+    pub fn diff(&mut self, a: i32, b: i32) -> i32 {
+        let ga = self.resolve(a).clone();
+        let nb = self.resolve(b).clone().mk_not();
+        let res = ga.mk_and(&nb, &self.context);
+        self.intern(res)
+    }
+
+    pub fn xor(&mut self, a: i32, b: i32) -> i32 {
+        let ga = self.resolve(a).clone();
+        let gb = self.resolve(b).clone();
+        let res = ga.mk_xor(&gb, &self.context);
+        self.intern(res)
+    }
+
     // --- variables ---------------------------------------------------------
 
     /// Declare the next variable (flat index `next_var`), returning its handle.
@@ -393,6 +440,20 @@ impl Engine {
         self.context.borrow().node_count() as i32
     }
 
+    /// Nodes reachable from *this diagram's* root, and the connections leaving
+    /// them -- this crate's own counting convention (one edge per connection, no
+    /// return-map entries). Unlike [`Self::node_count`] this is per-handle.
+    pub fn diagram_size(&self, h: i32) -> (usize, usize) {
+        self.resolve(h).count_nodes_and_edges()
+    }
+
+    /// The same diagram measured the way the reference C++ CFLOBDD counts:
+    /// two edges per connection plus the entries of every distinct return map.
+    /// See BENCHMARKS.md, "Reading the size column".
+    pub fn conv_size(&self, h: i32) -> (usize, usize) {
+        self.resolve(h).count_cflobdd_convention()
+    }
+
     /// Rough heap footprint of the shared `Context`, in bytes.
     pub fn memory_usage(&self) -> i64 {
         self.context.borrow().size_estimate() as i64
@@ -407,6 +468,92 @@ mod tests {
     fn grammars_have_104_vars() {
         assert_eq!(build_field_grouped().num_vars(), 104);
         assert_eq!(build_aligned_balanced().num_vars(), 104);
+        assert_eq!(build_aligned_balanced_shared().num_vars(), 104);
+    }
+
+    /// Every selector Java can pass must decode, and each must be its own layout.
+    #[test]
+    fn every_config_selector_decodes() {
+        assert_eq!(GrammarConfig::from_i32(0), Some(GrammarConfig::FieldGrouped));
+        assert_eq!(GrammarConfig::from_i32(1), Some(GrammarConfig::AlignedBalanced));
+        assert_eq!(
+            GrammarConfig::from_i32(2),
+            Some(GrammarConfig::AlignedBalancedShared)
+        );
+        assert_eq!(GrammarConfig::from_i32(3), None);
+        assert_eq!(GrammarConfig::from_i32(-1), None);
+    }
+
+    /// The two aligned-balanced layouts agree on *what* they represent -- same
+    /// 104 variables in the same order -- and differ only in grammar-node
+    /// sharing. Semantics must match exactly; the shared layout is what makes
+    /// the diagram smaller, because a src_ip subtree and a dst_port subtree of
+    /// the same width become the same node.
+    #[test]
+    fn shared_and_unshared_aligned_balanced_agree() {
+        let mut a = Engine::new(GrammarConfig::AlignedBalanced);
+        let mut b = Engine::new(GrammarConfig::AlignedBalancedShared);
+        let mut counts = Vec::new();
+        for engine in [&mut a, &mut b] {
+            let vars: Vec<i32> = (0..104).map(|_| engine.create_var()).collect();
+            // one bit from each field: srcip[0], dstip[0], srcport[0], dstport[0], proto[0]
+            let mut acc = TRUE;
+            for &i in &[0usize, 32, 64, 80, 96] {
+                acc = engine.and(acc, vars[i]);
+            }
+            assert_eq!(engine.sat_count(acc), 2.0_f64.powi(104 - 5));
+            counts.push(engine.diagram_size(acc));
+        }
+        let (unshared_nodes, unshared_edges) = counts[0];
+        let (shared_nodes, shared_edges) = counts[1];
+        assert!(
+            shared_nodes < unshared_nodes && shared_edges < unshared_edges,
+            "width-sharing should shrink the diagram: unshared {:?}, shared {:?}",
+            counts[0],
+            counts[1]
+        );
+    }
+
+    /// `diff` is `and(a, not b)` and `xor` is the real thing, both canonical.
+    #[test]
+    fn diff_and_xor_match_their_definitions() {
+        let mut e = Engine::new(GrammarConfig::AlignedBalancedShared);
+        let x = e.create_var();
+        let y = e.create_var();
+        let nx = e.not(x);
+        let ny = e.not(y);
+
+        let expected_diff = e.and(x, ny);
+        assert_eq!(e.diff(x, y), expected_diff);
+        assert_eq!(e.diff(x, x), FALSE);
+        assert_eq!(e.diff(x, FALSE), x);
+
+        let a = e.and(x, ny);
+        let b = e.and(nx, y);
+        let expected_xor = e.or(a, b);
+        assert_eq!(e.xor(x, y), expected_xor);
+        assert_eq!(e.xor(x, x), FALSE);
+        assert_eq!(e.xor(x, FALSE), x);
+    }
+
+    /// Per-handle sizes are per *handle*, not the global context count.
+    #[test]
+    fn diagram_size_is_per_handle() {
+        let mut e = Engine::new(GrammarConfig::AlignedBalancedShared);
+        let (tn, te) = e.diagram_size(TRUE);
+        assert!(tn >= 1, "the constant still has a root node");
+
+        let x = e.create_var();
+        let (xn, xe) = e.diagram_size(x);
+        assert!(xn > tn || xe > te, "a projection is bigger than a constant");
+
+        // The reference convention counts more of the same diagram, never less.
+        let (cn, ce) = e.conv_size(x);
+        assert_eq!(cn, xn, "node counts are convention-free");
+        assert!(ce >= xe, "the reference counts two edges per connection");
+
+        // ... and the global count is a different, larger number.
+        assert!(e.node_count() as usize >= xn);
     }
 
     #[test]
@@ -427,7 +574,11 @@ mod tests {
 
     #[test]
     fn canonical_ids_and_boolean_identities() {
-        for config in [GrammarConfig::FieldGrouped, GrammarConfig::AlignedBalanced] {
+        for config in [
+            GrammarConfig::FieldGrouped,
+            GrammarConfig::AlignedBalanced,
+            GrammarConfig::AlignedBalancedShared,
+        ] {
             let mut engine = Engine::new(config);
             let v0 = engine.create_var();
             let v1 = engine.create_var();
