@@ -20,7 +20,7 @@ warning: associated function `mk_hadamard_2` is never used
 
 warning: `gcflobdd` (lib) generated 2 warnings
    Compiling gcflobdd v0.1.0 (/Users/endaytrer/src/gcflobdd)
-    Finished `release` profile [optimized] target(s) in 0.66s
+    Finished `release` profile [optimized] target(s) in 0.53s
      Running tests/matmul.rs (target/release/deps/matmul-532b904c29fac2f7)
 Dense 16x16 check (level 3):
   built in 0 ms

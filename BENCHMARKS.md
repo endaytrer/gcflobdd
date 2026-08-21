@@ -1,494 +1,338 @@
-# gcflobdd vs. the reference C++ CFLOBDD
+# Benchmarks
 
-Quantum-algorithm and matrix-operation benchmarks, measured against
-[`trishullab/cflobdd`](https://github.com/trishullab/cflobdd) (unweighted build,
-`../cflobdd`) on the same machine.
+Quantum algorithms and matrix operations in this crate, measured beside the
+reference C++ CFLOBDD ([`trishullab/cflobdd`](https://github.com/trishullab/cflobdd),
+unweighted build) and CUDD's ADDs as a BDD-family control.
 
-**Machine**: Fedora 44, Linux 7.1.4, 24 cores, 62 GB RAM.
-**Rust**: `cargo build --release --test quantum --features bigint`.
-**C++**: prebuilt `./cflobdd`, gcc 16.1.1, Boost 1.90.
+**Machine.** Apple M1 Pro, 10 cores, 32 GB, macOS 26.5.2 (Darwin 25.5.0). Runs
+are strictly sequential; nothing else was on the machine.
 
-Reproduce with:
+**Builds.** rustc 1.95.0, `cargo build --release --test quantum --features bigint`.
+Apple clang 21.0.0 with Boost 1.89.0. CUDD 3.0.0 (`--enable-obj`).
+
+Raw runs, scripts and figures are in [`results/macos-m1pro/`](results/macos-m1pro).
 
 ```bash
-# the full ladder, 2 to 65536 qubits, both implementations.  `ghz` runs two
-# ladders on this crate's side: `testGHZAlgoMatrix` (labelled `ghz`, the
-# reference's construction, the row comparable with it) and `testGHZAlgo`
-# (labelled `ghz-vec`, the textbook state-vector circuit).
+# the ladder, 2 to 65536 qubits, both implementations
 LABEL=rust-bigint ONLY=rust RUST_BIN=<bigint build> PMAX=16 SEEDS=1 \
   OUT=results/ladder.csv scripts/compare_cflobdd.sh ghz bv dj
 ONLY=cpp PMAX=16 SEEDS=1 APPEND=1 OUT=results/ladder.csv scripts/compare_cflobdd.sh ghz bv dj
+PMAX=4 scripts/compare_cflobdd.sh qft            # QFT separately; both sides stop at 16
 
-PMAX=4 scripts/compare_cflobdd.sh qft   # QFT separately; both sides die past 16 qubits
-cargo test --test matmul --release      # matrix operations (this crate only)
-
-# Grover, ten seeds per size.  GROVER_MODE picks this crate's variant:
-# testGroversAlgo (honest iteration), testGroversAlgoFast (f64 exponentiation)
-# or testGroversAlgoBig (wide-float exponentiation, the default).
+# Grover, ten seeds per size
 LABEL=rust-bigint ONLY=rust RUST_BIN=<bigint build> PMIN=2 PMAX=10 \
   SEEDS="1 2 3 4 5 6 7 8 9 10" OUT=results/grover_compare.csv \
   scripts/compare_cflobdd.sh grover
-CPP_BIN=<c++ build> CPP_LABEL=cpp-fixed ONLY=cpp PMIN=2 PMAX=9 \
-  SEEDS="1 2 3 4 5 6 7 8 9 10" APPEND=1 \
-  OUT=results/grover_compare.csv scripts/compare_cflobdd.sh grover
 
-# Past 2046 qubits the theory check cannot run, so ask for a weaker one:
-#   <binary> testGroversAlgoBig <p | qN> <seed> [theory | answer | none]
-<bigint build> testGroversAlgoBig 14 1 answer      # 16384 qubits, 2.8 s
-<bigint build> testGroversAlgoBig q200 1           # 200 qubits, uneven grammar
+# qubit counts that are not powers of two, this crate only
+BIN=<bigint build> OUT=results/uneven.csv results/macos-m1pro/uneven.sh
+
+# the control group
+CUDD=<cudd_test build> OUT=results/cudd.csv results/macos-m1pro/cudd.sh
+
+cargo test --test matmul --release -- --dense-level 4   # matrix operations
 ```
 
-## TL;DR
+## Reading the size column
 
-Both implementations run GHZ, Bernstein-Vazirani and Deutsch-Jozsa correctly at
-every size from 2 to **65536 qubits**. At the top of that ladder:
+The two implementations do not count the same thing. The reference counts **two
+edges per connection plus the entries of every distinct return map**; this crate
+counts one edge per connection and no return maps at all. A ratio between those
+two numbers is a ratio between two counters, not between two diagrams.
 
-| | this crate | reference C++ | |
-|---|--:|--:|---|
-| **GHZ**, 65536 qubits | 2.18 s | 2.35 s | different circuits; see *GHZ* |
-| **Bernstein-Vazirani**, 65536 qubits | **167 ms** | 429 ms | **2.6x** |
-| **Deutsch-Jozsa**, 65536 qubits | **24 ms** | 89 ms | **3.8x** |
-| **QFT**, 16 qubits | **102 ms** | 194 ms | **1.9x** |
-| **Grover**, 128 qubits | **7.8 ms** | 10 ms | 1.3x |
-| **Grover**, 512 qubits | **18 ms** | 115 ms | **6.3x** |
-| **Grover**, 1024 qubits | **35 ms** | segfaults | |
-| **Grover**, 16384 qubits | **2.8 s** | out of reach | |
-| peak RSS, 65536 qubits | **392-737 MB** | 987-1091 MB | |
+Every `size` in this document is therefore **nodes + edges under the reference's
+convention**, on both sides -- `count_cflobdd_convention` here, `CountNodesAndEdges`
+there. Node counts alone are convention-free and agree.
 
-> **Correction: this document's diagram-size comparisons do not hold.** Every
-> "size" figure below is each implementation's *own* counter, and the two do not
-> count the same thing. The reference counts two edges per connection plus the
-> entries of every distinct return map; this crate counts one edge per
-> connection and no return maps at all. A ratio between those two numbers is a
-> ratio between two counters, not between two diagrams.
->
-> Counted the same way -- both under the reference's convention, via
-> `count_cflobdd_convention`, on an M1 Pro, and with GHZ built the same way on
-> both sides:
->
-> | | this crate | reference C++ |
-> |---|--:|--:|
-> | GHZ, 65536 qubits | 846 | 914 |
-> | Bernstein-Vazirani, 65536 qubits | 58,620 | 58,799 |
-> | Deutsch-Jozsa, 65536 qubits | 399 | 338 |
-> | QFT, 16 qubits | 131,917 | 132,238 |
-> | Grover, 512 qubits | 998 | 1,038 |
->
-> **At the top of every ladder the two representations produce diagrams of the
-> same size** -- within 7% on four of the five, and on Deutsch-Jozsa this
-> crate's is 18% *larger*. None of the "1.8x", "2x", "4.2x" or "461x" claimed
-> below survives; small-size rows still differ by up to about 2.5x, in this
-> crate's favour. What does survive is the runtime and the reach: this crate is
-> faster on BV, DJ, QFT and Grover, and still running where the reference has
-> crashed or run out of memory.
->
-> The size columns below are left as measured -- they are correct in this
-> crate's own convention, and comparable along a ladder -- and the prose after
-> each one now says what the like-for-like number is. Both conventions for both
-> implementations are in `results/macos-m1pro/counting_convention.csv`; the full
-> corrected table is `results/macos-m1pro/all_results.csv`.
+| algorithm | qubits | reference, its counter | gcflobdd, ref counter | reference, gcflobdd counter | gcflobdd, its counter |
+|---|--:|--:|--:|--:|--:|
+| GHZ | 2,048 | 634 | 586 | 356 | 332 |
+| GHZ | 65,536 | 914 | 846 | 516 | 482 |
+| Bernstein-Vazirani | 2,048 | 3,329 | 3,270 | 1,895 | 1,863 |
+| Bernstein-Vazirani | 16,384 | 16,510 | 16,432 | 9,427 | 9,385 |
+| Deutsch-Jozsa | 2,048 | 241 | 279 | 137 | 155 |
+| Deutsch-Jozsa | 16,384 | 298 | 351 | 170 | 197 |
+| QFT | 8 | 644 | 336 | 46 | 29 |
+| QFT | 16 | 132,238 | 131,917 | 308 | 287 |
+| Grover | 32 | 161 | 140 | 89 | 78 |
+| Grover | 512 | 1,028 | 998 | 585 | 570 |
 
-Every run finishes inside 5 s wall-clock, the largest being GHZ at 2.8 s.
-
-**Where each wins.** This crate is faster on BV, DJ and QFT at every size --
-1.4x to 8x, the wider ratios at small sizes partly an artefact of the
-reference's millisecond timer. It does *not* hold a smaller diagram: counted the
-same way the two are within a few percent everywhere (see the correction above).
-GHZ's row is not a comparison at all as it stands -- the two sides
-run different constructions; running the reference's on both puts them level,
-at the same diagram size (see *GHZ*). Neither implementation
-now reaches further than the other on those four: the `i128` ceiling that used
-to stop BV and DJ at 64 qubits is gone (see *Arbitrary-precision coefficients*).
-
-**Grover needs a caveat.** The reference's Grover is wrong from 16 qubits up as
-its `HEAD` stands -- 0 of 10 seeds correct at 16, 32 and 64 -- so its rows above
-come from a build carrying a one-line fix to an uninitialised field in its
-multiply, without which the comparison would be against a wrong answer. Fixed,
-the two are close through the middle of the ladder (1.3-2x from 16 to 128
-qubits) and diverge at the top, where this crate is 6.3x faster at 512 qubits
-and still running at 1024 and beyond. Ours is also verified against theory at
-every size to 1024 qubits, and answers correctly under a weaker check to
-**16384**.
+The gap between the two conventions is not a constant factor. It is almost the
+whole number in the extreme case. Take 16-qubit QFT: the diagram is 5 nodes and
+282 connections, which is this crate's 287. Under the reference's convention the
+same diagram is 131,917 -- 5 nodes, 564 edges, and **131,348 return-map entries,
+99.6% of the total**. The reference's own 132,238 for the same circuit is within
+0.3% of it.
 
 ## Results
 
-Times are each implementation's *own* internal timer around the same phase of
-the algorithm. Size is nodes+edges of the result diagram, each side under its
-own counter (`CountNodesAndEdges` there, `count_nodes_and_edges` here) -- see
-the correction above before comparing the two columns. One seed per size;
-`results/ladder.csv` has every run.
+At the top of each ladder:
 
-### GHZ
+| | gcflobdd | reference | speed | gcflobdd size | reference size |
+|---|--:|--:|--:|--:|--:|
+| **GHZ**, 65,536 qubits | **1,577 ms** | 1,652 ms | **1.0x** | 846 | 914 |
+| **Bernstein-Vazirani**, 65,536 qubits | **255 ms** | 463 ms | **1.8x** | 58,620 | 58,799 |
+| **Deutsch-Jozsa**, 65,536 qubits | **31 ms** | 121 ms | **3.9x** | 399 | 338 |
+| **QFT**, 16 qubits | **95 ms** | 263 ms | **2.8x** | 131,917 | 132,238 |
+| **Grover**, 512 qubits | **20 ms** | 193 ms | **9.4x** | 998 | 1,038 |
 
-| qubits | rust | c++ | ratio | rust size | c++ size |
-|--:|--:|--:|--:|--:|--:|
-| 8 | 0.16 ms | 2 ms | 12.7x | 34 | 186 |
-| 256 | 6.2 ms | 7 ms | 1.1x | 104 | 466 |
-| 4096 | 97 ms | 89 ms | 0.9x | 160 | 690 |
-| 16384 | 450 ms | 388 ms | 0.9x | 188 | 802 |
-| 65536 | 2184 ms | 2350 ms | 1.1x | **216** | 914 |
+**Both implementations produce diagrams of the same size.** Within 8% on four of
+the five algorithms, and on Deutsch-Jozsa this crate's is 18% *larger*. The
+representations agree; what differs is the time to build them.
 
-Both diagrams are logarithmic: the reference gains 56 nodes+edges per doubling
-of the qubit count, this crate 14. Runtime is linear in qubits for both -- `n`
-gate applications here, `n` matrix multiplies there -- and the ratio wanders
-around 1.0, but the two are not doing the same `n` things:
+**Runtime.** This crate is faster on Bernstein-Vazirani, Deutsch-Jozsa, QFT and
+Grover at *every* size measured: 1.6x to 15x on BV, 2.4x to 11x on DJ, 2.0x to
+2.8x on QFT, 1.8x to 9.4x on Grover. The widest ratios are at small sizes, where
+the reference's 1 ms timer granularity flatters the comparison; the figures above
+are the honest ones. GHZ is a tie at 1.05x. Every run in the table finishes
+inside 3.7 s wall clock.
 
-**neither the size nor the time column above is a like-for-like comparison, and
-the size gap is not compression.** Two things separate them, and neither is the
-representation:
+**Reach.** Both run GHZ, Bernstein-Vazirani and Deutsch-Jozsa correctly at every
+size from 2 to 65,536 qubits. On Grover the reference dies with SIGBUS at 1,024
+qubits, where this crate is still verified against theory; under a weaker check
+it answers correctly to 65,536 (see *Grover*). No implementation finishes
+32-qubit QFT.
 
-1. The two harnesses count differently (see the correction under *TL;DR*).
-2. The two build different objects. `testGHZAlgo` here is the textbook circuit
-   on an `n`-variable state *vector*. `QuantumAlgos::GHZ` there works at
-   `level = ceil(log2 n) + 2` -- `4n` variables, an operator on a `2n`-qubit
-   register -- multiplying `n` CNOT matrices together and applying the product
-   to a basis vector. The GHZ state it wants sits on qubits `0..=n` inside that
-   operator, whose remaining `n-1` row bits and `n` column bits are free.
+![runtime](results/macos-m1pro/figures/runtime_all.svg)
 
-`testGHZAlgoMatrix` builds the reference's object instead, so that the two can
-be compared. It postdates the Fedora run, whose `results/ladder.csv` `ghz` rows
-are therefore all `testGHZAlgo`; in `results/macos-m1pro/ladder.csv` the two
-ladders are `ghz` and `ghz-vec`. Measured on an M1 Pro, with both diagrams
-counted the reference's way:
+![diagram size](results/macos-m1pro/figures/size_all.svg)
 
-| qubits | this crate, nodes | c++ nodes | this crate, nodes+edges | c++ nodes+edges | this crate | c++ |
-|--:|--:|--:|--:|--:|--:|--:|
-| 8 | 27 | 27 | 170 | 186 | 0.46 ms | 1 ms |
-| 256 | 67 | 67 | 430 | 466 | 5.5 ms | 7 ms |
-| 4096 | 99 | 99 | 638 | 690 | 91 ms | 89 ms |
-| 65536 | 131 | 131 | 846 | 914 | **1.58 s** | 1.65 s |
+Every run, three implementations:
 
-**The node counts are equal at every size on the ladder.** The whole of the
-apparent 4.2x was the two differences above. What is left is `4` edges per
-level, and it is an accounting difference too: the reference materialises a
-no-distinction node as an internal node with two connections at every level,
-where this crate has one `DontCare` node type carrying no connections at all.
+| algorithm | qubits | gcflobdd | reference | CUDD | gcflobdd size | reference size | CUDD nodes |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| GHZ | 2 | 0.308 ms | 2 ms | 0.21 ms | 73 | 81 | 8 |
+|  | 4 | 0.288 ms | 1 ms | 0.124 ms | 118 | 130 | 12 |
+|  | 8 | 0.463 ms | 1 ms | 0.186 ms | 170 | 186 | 20 |
+|  | 16 | 0.619 ms | 2 ms | 0.409 ms | 222 | 242 | 36 |
+|  | 32 | 0.967 ms | 2 ms | 1.28 ms | 274 | 298 | 68 |
+|  | 64 | 1.78 ms | 3 ms | 5.86 ms | 326 | 354 | 132 |
+|  | 128 | 2.97 ms | 4 ms | 34 ms | 378 | 410 | 260 |
+|  | 256 | 5.47 ms | 7 ms | 234 ms | 430 | 466 | 516 |
+|  | 512 | 11 ms | 12 ms | aborts | 482 | 522 | -- |
+|  | 1,024 | 22 ms | 22 ms | -- | 534 | 578 | -- |
+|  | 2,048 | 44 ms | 45 ms | -- | 586 | 634 | -- |
+|  | 4,096 | 91 ms | 89 ms | -- | 638 | 690 | -- |
+|  | 8,192 | 192 ms | 188 ms | -- | 690 | 746 | -- |
+|  | 16,384 | 376 ms | 391 ms | -- | 742 | 802 | -- |
+|  | 32,768 | 783 ms | 777 ms | -- | 794 | 858 | -- |
+|  | 65,536 | 1,577 ms | 1,652 ms | -- | 846 | 914 | -- |
+| GHZ (state vector) | 2 | 0.074 ms | -- | -- | 14 | -- | -- |
+|  | 4 | 0.107 ms | -- | -- | 46 | -- | -- |
+|  | 8 | 0.196 ms | -- | -- | 70 | -- | -- |
+|  | 16 | 0.319 ms | -- | -- | 94 | -- | -- |
+|  | 32 | 0.486 ms | -- | -- | 118 | -- | -- |
+|  | 64 | 0.9 ms | -- | -- | 142 | -- | -- |
+|  | 128 | 1.71 ms | -- | -- | 166 | -- | -- |
+|  | 256 | 3.39 ms | -- | -- | 190 | -- | -- |
+|  | 512 | 6.33 ms | -- | -- | 214 | -- | -- |
+|  | 1,024 | 13 ms | -- | -- | 238 | -- | -- |
+|  | 2,048 | 25 ms | -- | -- | 262 | -- | -- |
+|  | 4,096 | 55 ms | -- | -- | 286 | -- | -- |
+|  | 8,192 | 118 ms | -- | -- | 310 | -- | -- |
+|  | 16,384 | 235 ms | -- | -- | 334 | -- | -- |
+|  | 32,768 | 545 ms | -- | -- | 358 | -- | -- |
+|  | 65,536 | 1,018 ms | -- | -- | 382 | -- | -- |
+| Bernstein-Vazirani | 2 | 0.13 ms | 2 ms | 0.0168 ms | 37 | 74 | 7 |
+|  | 4 | 0.18 ms | 1 ms | 0.0233 ms | 65 | 100 | 11 |
+|  | 8 | 0.231 ms | 1 ms | 0.0518 ms | 103 | 146 | 19 |
+|  | 16 | 0.37 ms | 1 ms | 0.448 ms | 148 | 209 | 35 |
+|  | 32 | 0.569 ms | 1 ms | timeout | 214 | 272 | -- |
+|  | 64 | 0.736 ms | 2 ms | -- | 294 | 370 | -- |
+|  | 128 | 1.21 ms | 3 ms | -- | 458 | 524 | -- |
+|  | 256 | 2.02 ms | 4 ms | -- | 692 | 776 | -- |
+|  | 512 | 3.53 ms | 6 ms | -- | 1,150 | 1,231 | -- |
+|  | 1,024 | 6.24 ms | 11 ms | -- | 1,923 | 2,001 | -- |
+|  | 2,048 | 11 ms | 19 ms | -- | 3,270 | 3,401 | -- |
+|  | 4,096 | 22 ms | 36 ms | -- | 5,485 | 5,627 | -- |
+|  | 8,192 | 38 ms | 60 ms | -- | 9,268 | 9,379 | -- |
+|  | 16,384 | 70 ms | 113 ms | -- | 16,432 | 16,540 | -- |
+|  | 32,768 | 140 ms | 235 ms | -- | 30,624 | 30,715 | -- |
+|  | 65,536 | 255 ms | 463 ms | -- | 58,620 | 58,799 | -- |
+| Deutsch-Jozsa | 2 | 0.093 ms | 1 ms | 0.0139 ms | 35 | 53 | 6 |
+|  | 4 | 0.14 ms | 1 ms | 0.0325 ms | 63 | 72 | 18 |
+|  | 8 | 0.179 ms | 1 ms | 0.185 ms | 87 | 91 | 233 |
+|  | 16 | 0.244 ms | 1 ms | 219 ms | 111 | 110 | 53,517 |
+|  | 32 | 0.279 ms | 1 ms | timeout | 135 | 129 | -- |
+|  | 64 | 0.334 ms | 1 ms | -- | 159 | 148 | -- |
+|  | 128 | 0.409 ms | 1 ms | -- | 183 | 167 | -- |
+|  | 256 | 0.502 ms | 2 ms | -- | 207 | 186 | -- |
+|  | 512 | 0.683 ms | 2 ms | -- | 231 | 205 | -- |
+|  | 1,024 | 1.13 ms | 3 ms | -- | 255 | 224 | -- |
+|  | 2,048 | 1.43 ms | 5 ms | -- | 279 | 243 | -- |
+|  | 4,096 | 2.37 ms | 9 ms | -- | 303 | 262 | -- |
+|  | 8,192 | 4.35 ms | 15 ms | -- | 327 | 281 | -- |
+|  | 16,384 | 8.49 ms | 32 ms | -- | 351 | 300 | -- |
+|  | 32,768 | 16 ms | 60 ms | -- | 375 | 319 | -- |
+|  | 65,536 | 31 ms | 121 ms | -- | 399 | 338 | -- |
+| QFT | 2 | 0.112 ms | 0 ms | 0.0346 ms | 16 | 40 | 12 |
+|  | 4 | 0.255 ms | 0 ms | 0.201 ms | 27 | 80 | 47 |
+|  | 8 | 1.02 ms | 2 ms | 9.76 ms | 336 | 644 | 95 |
+|  | 16 | 95 ms | 263 ms | 52,850 ms | 131,917 | 132,238 | 175 |
+| Grover | 4 | 0.367 ms | 2 ms | 0.208 ms | 29 | 47 | 9 |
+|  | 8 | 0.728 ms | 2 ms | 2.7 ms | 50 | 73 | 16 |
+|  | 16 | 1.54 ms | 3 ms | 329 ms | 90 | 110 | 95 |
+|  | 32 | 2.78 ms | 5 ms | timeout | 140 | 161 | -- |
+|  | 64 | 3.84 ms | 7 ms | -- | 218 | 250 | -- |
+|  | 128 | 6.51 ms | 13 ms | -- | 359 | 388 | -- |
+|  | 256 | 13 ms | 45 ms | -- | 587 | 624 | -- |
+|  | 512 | 20 ms | 193 ms | -- | 998 | 1,038 | -- |
+|  | 1,024 | 45 ms | -- | -- | 1,765 | -- | -- |
 
-**Head to head on the same object, the two are level** -- 1.58 s against 1.65 s
-at 65536 qubits, and within a few percent from 1024 up. That was not true when
-this comparison was first run: building the reference's object took 6.16 s here,
-3.6x behind, and every bit of the gap was in constructing the gates rather than
-multiplying them. See *A controlled gate is one node, not a sum of two towers*
-below for what closed it.
+## Qubit counts that are not powers of two
 
-The construction still costs what it should against this crate's own
-state-vector run -- 1.58 s against 1.02 s, 1.55x -- because `n` matrix-matrix
-multiplies over a `2n`-qubit register is more work than `n` matrix-vector
-products over `n` variables. That is why `testGHZAlgo` remains what this crate
-would actually run, and why its row is kept.
+The reference is indexed by *level*: a level-`p` CFLOBDD has `2^p` variables, so
+`2^p` qubits is the only register it can build. This crate takes the count
+itself. `Register` in `tests/quantum.rs` splits a qubit count into its ceiling
+and floor halves down to one qubit's `S -> a a`; a power of two divides evenly at
+every level and reproduces the balanced family exactly, and any other count
+divides unevenly.
 
-### Bernstein-Vazirani
+Nothing in the matrix algebra notices. The deferred semiring never asks *where* a
+grouping divides its variables -- it recurses on whatever two sub-grammars a rule
+names, multiplies their exit maps and lifts the result. The one thing it needs is
+that the division fall between two `(row, column)` pairs rather than through one,
+which in the interleaved order is exactly **every grammar node covers an even
+number of variables**. Building the tree over qubits gives that for free at any
+count. Balance, equal splits and power-of-two dimensions are not required and are
+never checked; `check_matrix_grammar` in `src/gcflobdd/matmul/mod.rs` enforces
+even variables and binary groupings, and nothing more.
 
-| qubits | rust | c++ | ratio | rust size | c++ size |
-|--:|--:|--:|--:|--:|--:|
-| 8 | 0.44 ms | 1 ms | 2.3x | 51 | 146 |
-| 256 | 1.5 ms | 4 ms | 2.6x | 389 | 776 |
-| 4096 | 14 ms | 32 ms | 2.3x | 3,129 | 5,627 |
-| 16384 | 43 ms | 110 ms | 2.5x | 9,385 | 16,540 |
-| 65536 | **167 ms** | 429 ms | **2.6x** | 33,493 | 58,799 |
+Pass `qN` instead of `p` to ask for exactly `N` qubits. Every run below is
+correct; times are medians over 3 seeds where the algorithm takes one.
 
-A steady 2.3-2.6x from 256 qubits up. The size columns are two different
-counters and the apparent 1.8x is theirs, not the diagrams': counted the same
-way it is 58,620 against 58,799 at 65536 qubits, a 0.3% difference. BV's diagram
-*must* grow linearly -- it encodes the planted secret, `n` incompressible bits
--- and both implementations sit on that bound.
+| qubits | grammar | ghz time | ghz size | bv time | bv size | dj time | dj size | grover time | grover size |
+|--:|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| **100** | 4 uneven | 2.79 ms | 434 | 1.15 ms | 458 | 0.47 ms | 225 | 6.82 ms | 331 |
+| **101** | 6 uneven | 3.35 ms | 435 | 1.17 ms | 466 | 0.53 ms | 240 | -- | -- |
+| 128 | balanced | 3.04 ms | 378 | 1.22 ms | 458 | 0.40 ms | 183 | 6.40 ms | 352 |
+| **200** | 4 uneven | 4.55 ms | 486 | 1.91 ms | 692 | 0.56 ms | 249 | 10.24 ms | 549 |
+| 256 | balanced | 5.49 ms | 430 | 2.07 ms | 706 | 0.49 ms | 207 | 13.10 ms | 584 |
+| **300** | 6 uneven | 7.01 ms | 560 | 2.98 ms | 955 | 0.68 ms | 288 | 18.18 ms | 803 |
+| **333** | 8 uneven | 9.18 ms | 561 | 2.96 ms | 963 | 0.78 ms | 303 | -- | -- |
+| **500** | 6 uneven | 11.16 ms | 583 | 3.83 ms | 1,223 | 0.83 ms | 304 | 21.06 ms | 1,057 |
+| 512 | balanced | 10.87 ms | 482 | 3.60 ms | 1,136 | 0.70 ms | 231 | 19.52 ms | 998 |
+| **999** | 9 uneven | 27.18 ms | 665 | 6.64 ms | 2,033 | 1.19 ms | 365 | -- | -- |
+| **1,000** | 6 uneven | 23.22 ms | 635 | 6.46 ms | 2,024 | 1.09 ms | 328 | 38.56 ms | 1,849 |
+| 1,024 | balanced | 21.55 ms | 534 | 6.28 ms | 1,923 | 0.90 ms | 255 | 42.98 ms | 1,769 |
+| **2,000** | 6 uneven | 41.56 ms | 687 | 12.59 ms | 3,455 | 1.48 ms | 352 | 78.71 ms | 3,264 |
+| 2,048 | balanced | 42.74 ms | 586 | 11.11 ms | 3,270 | 1.38 ms | 279 | 76.29 ms | 3,100 |
 
-### Deutsch-Jozsa
+**An exact count costs about what the neighbouring power of two costs.** Across
+all 33 uneven points the time ratio against the next power of two up runs from
+0.64x to 1.32x, and the size ratio from 0.80x to 1.43x. The premium has a
+structural cause and a bound: an uneven tree carries two adjacent block sizes at
+each level where a power of two carries one, so it has at most twice as many
+distinct grammar nodes -- 1,000 qubits resolves into 16 distinct block sizes
+against 1,024's 11.
 
-| qubits | rust | c++ | ratio | rust size | c++ size |
-|--:|--:|--:|--:|--:|--:|
-| 8 | 0.37 ms | 1 ms | 2.7x | 43 | 91 |
-| 256 | 0.45 ms | 2 ms | 4.4x | 113 | 186 |
-| 4096 | 1.8 ms | 7 ms | 4.0x | 169 | 262 |
-| 16384 | 5.9 ms | 22 ms | 3.7x | 197 | 300 |
-| 65536 | **24 ms** | 89 ms | **3.8x** | 225 | 338 |
+Only three of the five algorithms take an *odd* count. `sqrt(N) = 2^(n/2)` runs
+through Grover's iteration count, its initial amplitude and its theory check, and
+through QFT's `2^(-n/2)` normalisation, and every amplitude type here carries an
+integer exponent. That is the algorithms' arithmetic asking, not the
+representation: 101, 333 and 999 qubits of GHZ, Bernstein-Vazirani and
+Deutsch-Jozsa all run, and the smoke test runs them at 5 and 7.
 
-The widest sustained margin, at a diagram that stays logarithmic on both sides.
-This is the one algorithm where counting both the same way leaves this crate's
-diagram *larger*: 399 against 338 at 65536 qubits. The size columns' apparent
-1.5x the other way is the counter.
+![runtime at uneven counts](results/macos-m1pro/figures/uneven_runtime.svg)
 
-### QFT
+![size at uneven counts](results/macos-m1pro/figures/uneven_size.svg)
 
-| qubits | rust (bigint) | rust (i128) | c++ | ratio | rust size | c++ size |
-|--:|--:|--:|--:|--:|--:|--:|
-| 8 | 1.2 ms | 2.4 ms | 2 ms | 1.7x | 29 | 644 |
-| 16 | **102 ms** | 66 ms | 194 ms | **1.9x** | **287** | **132,238** |
-| 32 | does not finish | does not finish | exhausts memory (9.3 GB) | - | - | - |
+### Where it matters: QFT
 
-Medians of three seeds; QFT timings are noisy on both sides (±40% run to run at
-16 qubits), so treat the ratio as approximate. QFT is the one algorithm here
-that does *not* need arbitrary precision -- 16 qubits is far below the `i128`
-ceiling -- and it runs about 1.5x faster without it, the largest `bigint`
-overhead measured anywhere.
+| qubits | grammar | qft time | qft size |
+|--:|---|--:|--:|
+| **6** | 1 uneven | 0.55 ms | 178 |
+| 8 | balanced | 0.98 ms | 336 |
+| **10** | 2 uneven | 2.29 ms | 1,186 |
+| **12** | 1 uneven | 6.60 ms | 8,437 |
+| **14** | 2 uneven | 15.71 ms | 8,542 |
+| 16 | balanced | 84.40 ms | 131,917 |
+| **18** | 3 uneven | 423.59 ms | 526,023 |
+| **20** | 2 uneven | 2,240.39 ms | 2,100,380 |
+| **22** | 3 uneven | 10,962.26 ms | 8,395,111 |
 
-QFT is where the two counters diverge most, and it is worth being precise about
-what that does and does not show. The reference's diagram goes 644 -> 132,238
-nodes+edges from 8 to 16 qubits and then out of memory, while this crate's
-*counter* reports 287. But a Fourier-transformed state's return maps outweigh
-everything structural in it by two orders of magnitude, and this crate's counter
-does not count return maps: counted the reference's way, this crate's diagram is
-131,917 -- a 0.2% difference, not 461x. Both implementations blow up on this
-state in the same way. Both then fail at 32 qubits -- the reference on memory,
-this crate on time.
+QFT is the algorithm whose cost is dominated by the register rather than the
+circuit, and it is where rounding a qubit count up to the next power of two stops
+being a rounding error. **Ten qubits of QFT cost 2.3 ms and a diagram of 1,186.
+Rounding that up to 16 costs 84 ms and 131,917** -- 37x the time and 111x the
+diagram, to simulate a register six qubits wider than the one asked for. Above 16
+there is no rounding up at all: this crate reaches 22 qubits in 11 s and 2.5 GB,
+and 32 qubits finishes in neither implementation.
 
-### Grover
+## Grover
 
-The one algorithm here whose cost is exponential whatever the representation:
-it applies the same operator `M = U_s U_w` a fixed `floor((pi/4) 2^(n/2))`
-times. There are two ways to pay that, and this crate implements both because
-the reference takes the second:
+The reference's Grover rows come from a build carrying the upstream fix for an
+uninitialised field in its dense multiply. On this machine the unpatched build is
+indistinguishable from it -- correct on 10 of 10 seeds at every size it reaches,
+with matching times and sizes -- so the fix changes nothing here; it is applied
+because the ladder above 256 qubits was measured with it.
 
-- **honest iteration** -- apply `M` to the state `k` times (`testGroversAlgo`);
-- **operator exponentiation** -- build `M^k` by repeated squaring, `O(log k)`
-  matrix multiplies, then apply it once (`testGroversAlgoFast` in `f64`,
-  `testGroversAlgoBig` in a wide float).
+Ten seeds per size. Both are correct on all ten at every size to 512 qubits;
+above that the reference does not run.
 
-Head to head, this crate exponentiating in a wide float against the reference's
-`testGroversAlgo`. Ten seeds per size to 128 qubits, three beyond; both sides
-answered every run correctly. All rows here are the `bigint` build; the default
-`i128` build gives the same answers to 64 qubits and refuses past that, since
-the diffusion operator is dense and its path counts reach `2^n`.
+### How far it goes
 
-**The reference is built from its `HEAD` plus a one-line fix.** As it stands, its
-Grover returns wrong answers from 16 qubits up -- 0 of 10 seeds at 16, 32 and 64
--- so timing it against a correct implementation would measure nothing. An
-uninitialised field in its multiply is responsible; initialising it makes the
-reference correct at every size below, and much faster besides, because the same
-defect was inflating its diagrams. That fix is one line in `matmult_map.cpp` and
-belongs in that project; the numbers below are what it gets with the fix
-applied.
+`testGroversAlgoBig` uses wide-float exponentiation of the Grover operator. The
+theory check is f64 arithmetic and refuses past 2,046 qubits, so larger runs ask
+for `answer`: the peak still has to land on the planted string, only the
+whole-state comparison against theory is dropped.
 
-| qubits | rust | c++ | ratio | rust size | c++ size |
-|--:|--:|--:|--:|--:|--:|
-| 4 | 0.38 ms | 2 ms | 5.3x | 15 | 47 |
-| 8 | 0.64 ms | 2 ms | 3.1x | 26 | 73 |
-| 16 | 1.5 ms | 3 ms | 2.1x | 49 | 110 |
-| 32 | 2.0 ms | 4 ms | 2.0x | 78 | 161 |
-| 64 | 4.0 ms | 6 ms | 1.5x | 123 | 250 |
-| 128 | 7.8 ms | 10 ms | 1.3x | 204 | 388 |
-| 256 | 10.2 ms | 30 ms | 2.9x | 335 | 617 |
-| 512 | 18.4 ms | 115 ms | 6.3x | 570 | 1,028 |
-| 1024 | **35.4 ms** | segfaults | - | 1,009 | - |
+| qubits | time | peak RSS | nodes | size | answer |
+|--:|--:|--:|--:|--:|:-:|
+| 1,024 | 0.06 s | 8 MB | 261 | 1,769 | correct |
+| 2,048 | 0.07 s | 13 MB | 452 | 3,100 | correct |
+| 4,096 | 0.18 s | 24 MB | 768 | 5,306 | correct |
+| 8,192 | 0.61 s | 66 MB | 1,307 | 9,073 | correct |
+| 16,384 | 2.78 s | 211 MB | 2,329 | 16,221 | correct |
+| 32,768 | 12.80 s | 728 MB | 4,355 | 30,397 | correct |
+| 65,536 | 75.02 s | 2,755 MB | 8,353 | 58,377 | correct |
 
-The two are within 1.3-2x of each other from 16 to 128 qubits, which is the
-honest reading of the middle of this ladder -- and the reference's millisecond
-timer makes the 4- and 8-qubit ratios unreliable, since 2 ms there is one tick.
-The gap reopens at the top: 2.9x at 256 qubits and 6.3x at 512, because the
-reference's cost per doubling grows faster than this crate's. It then crashes
-with `SIGSEGV` at 1024 qubits, on all three seeds, about 2 s in. The diagram is
-not smaller: the 2x in the size columns is the counter, and counted the same way
-it is 998 against 1,038 at 512 qubits.
+### Iteration, exponentiation, and how much mantissa it takes
 
-At 1024 qubits this crate is searching `2^1024` items -- `1.05 * 10^154`
-iterations of the Grover operator, an exact 512-bit integer -- in 35 ms and
-9.4 MB. The reference's peak RSS is ~847 MB throughout, but that is almost
-entirely the caches it preallocates at startup regardless of problem size.
+Three variants: honest iteration (`testGroversAlgo`), f64 exponentiation
+(`testGroversAlgoFast`) and wide-float exponentiation (`testGroversAlgoBig`).
 
-**1024 qubits is the verifier's limit, not the simulation's.** Checking against
-theory is `f64` arithmetic: `N = 2^n` becomes infinite at 2048 qubits and the
-expected unmarked amplitude underflows to zero, so the check would compare zero
-against zero and pass for any state at all. Rather than claim a verification
-that is not happening, `grover` asserts on that -- 2046 qubits is a hard edge
-with a message pointing at the alternative. See *How far with a weaker check*
-below for where the simulation itself gives out, which is much later.
-
-**Correctness is checked differently on the two sides, and more strictly here.**
-The reference draws one sample from `|amplitude|^2` and asks whether it equals
-the planted string. This crate reports the *peak*-amplitude string -- what a
-sampler converges to -- and then additionally checks the whole state against
-theory: after `k` iterations the marked amplitude must be `sin((2k+1)theta)`
-and every other one `cos((2k+1)theta)/sqrt(N-1)`, with `theta = asin(2^(-n/2))`.
-Since the state holds exactly those two values, that check pins all of it. Both
-hold at every size in the table, to within `1e-6`. The success probability is
-0.961 at 4 qubits and above 0.9999 everywhere else, so the two decoding rules
-agree with probability at least 0.96 anyway.
-
-### How far with a weaker check
-
-The checks are not what costs anything -- they are two `evaluate` calls and some
-scalar arithmetic against a diagram the simulation has already finished
-building. At 1024 qubits, full theory check 33 ms, answer only 29 ms, no check
-31 ms: one measurement's worth of noise. So weakening a check buys no speed at
-all. What it buys is *reach*, because each check needs its own values to be
-representable, and `grover` takes a `check` argument saying which to run:
-
-| `check` | what it establishes | stops at |
-|---|---|--:|
-| `theory` (default) | the whole state: both amplitudes against `sin`/`cos` | 2046 qubits |
-| `answer` | the peak amplitude decodes to the planted string | - |
-| `none` | nothing; builds the state and reports its size | - |
-
-With `answer`, one seed per size:
-
-| qubits | time | peak RSS | diagram | answer |
-|--:|--:|--:|--:|---|
-| 1024 | 35 ms | 9.4 MB | 1,009 | right |
-| 2048 | 58 ms | 14 MB | 1,772 | right |
-| 4096 | 152 ms | 25 MB | 3,033 | right |
-| 8192 | 598 ms | 60 MB | 5,186 | right |
-| 16384 | **2.77 s** | 177 MB | 9,271 | right |
-| 32768 | 14.7 s | 604 MB | 17,372 | right |
-
-**16384 qubits is what fits in 5 s** -- a search over `2^16384` with an
-iteration count of about `10^2466`. Beyond that the wall is time, not
-correctness or memory: 32768 qubits still returns the right answer, in 14.7 s
-and 604 MB.
-
-The cost is superlinear and getting worse: successive doublings cost 1.6x, 2.6x,
-3.9x, 4.6x, 5.3x, i.e. an exponent climbing through 2 towards about 2.4. That is
-what you would expect from three things growing together -- the number of matrix
-multiplies is `O(n)`, the diagram they run on grows about linearly in `n`
-(1,009 nodes and edges at 1024 qubits, 17,372 at 32768), and both the amplitudes
-and the path coefficients are `n`-bit numbers.
-
-**What `answer` does not establish.** It checks the algorithm's actual output,
-so a wrong answer is caught. It does *not* check amplitude magnitudes, which
-means it would not catch a state that is only partly amplified but still peaks
-on the right string -- exactly how `f64` exponentiation fails from 128 to 512
-qubits above. Those rows would have read "right" under `answer`. What makes the
-wide-float rows above trustworthy anyway is an argument rather than a
-measurement: the mantissa is `n + 64` bits, and the requirement derived below is
-`2(b+1) > n`, which `b = n + 64` satisfies at every size by a wide margin.
-Turning that argument back into a measurement past 2046 qubits needs the
-verification arithmetic moved to a wide float too; only the simulation has been.
-
-### Reaching M^k: iteration, squaring, and how much mantissa it takes
-
-The three modes, medians per size, with the theory check applied. Most of these
-runs are milliseconds long and noisy -- treat differences under 2x as nothing.
-The 796 s entry is a single run, for obvious reasons:
-
-| qubits | iterate (f64) | exponentiate (f64) | exponentiate (wide) |
+| qubits | iterate | fast | big |
 |--:|--:|--:|--:|
-| 4 | 0.24 ms | 0.28 ms | 0.38 ms |
-| 8 | 0.20 ms | 0.63 ms | 0.64 ms |
-| 16 | 0.35 ms | 1.1 ms | 1.5 ms |
-| 32 | 10.1 ms | 2.2 ms | 2.0 ms |
-| 64 | 796 s | 3.2 ms | 4.0 ms |
-| 128 | infeasible | 5.4 ms **wrong** | 7.8 ms |
-| 256 | infeasible | 7.2 ms **wrong** | 10.2 ms |
-| 512 | infeasible | 20.8 ms **wrong** | 18.4 ms |
-| 1024 | infeasible | 36.3 ms **wrong** | 35.4 ms |
+| 2 | 0.1 ms, correct | 0.1 ms, correct | 0.1 ms, correct |
+| 4 | 0.2 ms, correct | 0.4 ms, correct | 0.4 ms, correct |
+| 8 | 0.2 ms, correct | 0.8 ms, correct | 0.7 ms, correct |
+| 16 | 0.4 ms, correct | 1.5 ms, correct | 1.4 ms, correct |
+| 32 | 12.1 ms, correct | 2.5 ms, correct | 2.6 ms, correct |
+| 64 | -- | 3.8 ms, correct | 3.7 ms, correct |
+| 128 | -- | 6.4 ms, peak only | 6.2 ms, correct |
+| 256 | -- | 12.1 ms, peak only | 12.9 ms, correct |
+| 512 | -- | 18.0 ms, peak only | 19.7 ms, correct |
+| 1,024 | -- | 46.6 ms, **wrong** | 42.7 ms, correct |
 
-Honest iteration is the fastest thing here up to 16 qubits, but it is
-`Theta(2^(n/2))` matrix-vector products by construction: 51,471 of them at 32
-qubits, and 3,373,259,426 at 64. That last run does finish -- 796 s, the right
-answer, and a marked amplitude within `9e-7` of theory after 3.4 billion
-floating-point steps -- and it is the last size at which iterating is an option
-at all. Exponentiation replaces those 3.4 billion matrix-vector products with 47
-matrix multiplies (31 squarings and 16 accumulations), which is the 4.0 ms in
-the same row: a factor of 199,000. At 256 qubits it is 150 multiplies.
+Honest iteration is `O(sqrt(N))` applications of the Grover operator and stops
+being practical at 64 qubits; exponentiation replaces them with `O(log sqrt(N))`
+squarings. The precision is what separates the two exponentiating variants:
+squaring the operator `n/2` times needs a mantissa satisfying `2(b+1) > n`, and
+f64's 53 bits give out at 128 qubits. Past that its state is still *peaked* on
+the right string -- the answer looks right -- while the amplitudes no longer
+match theory, and at 1,024 qubits the diagram collapses to a single node and the
+answer is wrong. It is the whole-state check against theory, not the peak, that
+catches it.
 
-**Squaring costs precision, and exactly how much is calculable.** `M` rotates
-the state by `2 asin(2^(-n/2)) ~= 2^(1-n/2)` radians per iteration, while its
-matrix entries are `O(1)`. A `b`-bit mantissa cannot represent the difference
-between `M^j` and the identity until `j * 2^(1-n/2) > 2^-b`, so with `f64`
-(`b = 53`) every squaring is silently rounded away once `n > 2(b+1) = 108`: the
-first several `M -> M^2 -> M^4` steps return the same matrix, the rotation they
-should have accumulated is lost, and the search ends up having rotated a
-fraction of the way. A ladder in powers of two can only bracket that between 64
-and 128 qubits, and that is where it lands: `f64` verifies against theory at 64
-and fails at 128, arriving at a success probability of `2.4e-7` instead of 1.
+## Matrix operations
 
-That failure is worth dwelling on because **it still reports the right answer**.
-The state is partially amplified, so the marked string is still the peak and
-`equal:` reads 1 from 128 through 512 qubits; only the theory check catches it.
-That is the same signature as the reference's failure, which is why the
-`verified` column exists in `results/grover_compare.csv` at all. It only becomes
-self-evident at 1024 qubits, where the rotation is lost outright: `M^k` comes
-back a multiple of the identity, the state stays exactly uniform, its amplitude
-overflows to `inf`, and the diagram collapses to a **single node** -- 1009 nodes
-and edges in the wide float against 1 in `f64`, for the same circuit.
-
-The fix is mantissa, not representation: `testGroversAlgoBig` carries `n + 64`
-bits (320 at 256 qubits) and verifies at every size. It costs nothing
-measurable here -- the median wide-float/`f64` ratio over matched seeds is 1.08,
-well inside a run-to-run spread that runs 0.5x to 3x on runs this short -- since
-the diagrams hold only a handful of distinct amplitudes and the work is
-structural. Note the reference already carries 100-digit floats throughout,
-ample for 660 qubits by this same requirement, and still fails at 16, so its
-failure is not a precision one.
-
-### Matrix operations
-
-No comparable C++ driver exists (`testMatrixMultiplication` is marked obsolete
-and takes no size), so these are this crate only, from
-`cargo test --test matmul --release`:
+No comparable reference driver exists (`testMatrixMultiplication` is marked
+obsolete and takes no size), so these are this crate only, from
+`cargo test --test matmul --release -- --dense-level 4`:
 
 | operation | dimension | time | diagram |
 |---|--:|--:|--:|
 | Kronecker fold of a 2x2 | 2^128 square | <1 ms | 17 nodes |
 | `I * I`, `(J-I) * I` | 2^32 square | <1 ms | 13 nodes |
 | `(J-I) * e_0` (matrix-vector) | 2^32 | <1 ms | 25 nodes |
-| dense random `A * A` | 256 x 256 | 5.0 s | 8,354 nodes |
-| dense random `A * v` | 256 | 20 ms | 8,363 nodes |
+| dense random `A * A` | 256 x 256 | 6.5 s | 8,354 nodes |
+| dense random `A * v` | 256 | 29 ms | 8,363 nodes |
 
 A Kronecker fold costs exactly two nodes per doubling. The dense random case is
-the algorithm's worst case by construction -- an unstructured matrix has nothing
-to share -- and is three orders of magnitude slower than the structured ones at
-the same dimension.
-
-## Grammar shape: any binary tree, not just the balanced one
-
-The deferred semiring never asks *where* a grouping divides its variables. It
-recurses on whatever two sub-grammars a rule names, multiplies their exit maps,
-and lifts the result -- so the only thing it needs is that the division fall
-between two `(row, column)` pairs rather than through one. In the interleaved
-order that is exactly: **every grammar node covers an even number of
-variables**. Balance, equal splits and power-of-two dimensions are not required
-and are never checked.
-
-That is what `check_matrix_grammar` in `src/gcflobdd/matmul/mod.rs` enforces,
-and all it enforces beyond the two structural conditions below. The one
-restriction that goes further than "even variables" is **binary groupings**: a
-GCFLOBDD rule may name `k > 2` symbols, giving a node `k` connection layers,
-but the block recursion here is two-dimensional -- an A-connection choosing the
-row/column block and B-connections filling it -- so `matmul` rejects wider
-rules. Leaves must be `S -> a a`, one qubit each. Lifting the arity restriction
-is a real extension, not a relaxation; nothing else is.
-
-**Verified, not just asserted.** `products_work_on_aligned_balanced_grammars`
-and `kron_splits_an_aligned_balanced_grammar_at_its_root` in
-`src/gcflobdd/matmul/tests.rs` build the aligned-balanced tree of
-`tests/n_queens.rs` over qubit counts whose every level divides unevenly -- 3
-into 2+1, 5 into 3+2, 7 into 4+3 -- and check `mk_matmul`, `mk_matvec` and
-`mk_kron` against dense oracles, plus the identity's neutrality and the
-mixed-product property as exact *diagram* equality, which also pins canonicity.
-
-**So the benchmark register is built that way.** `Register` in
-`tests/quantum.rs` splits a qubit count into its ceiling and floor halves down
-to one qubit's `S -> a a`. A power of two divides evenly at every level and
-reproduces the balanced family exactly -- all 114 recorded power-of-two runs
-above come back byte-identical after the change -- and any other count divides
-unevenly without the algebra noticing. Pass `qN` instead of `p` to ask for
-exactly `N` qubits.
-
-| qubits | grammar | time | diagram | verified |
-|--:|---|--:|--:|:-:|
-| 100 | 4 uneven splits | 8.0 ms | 192 | yes |
-| 128 | balanced | 9.2 ms | 200 | yes |
-| **200** | **4 uneven splits** | **13.3 ms** | **313** | **yes** |
-| 256 | balanced | 15.7 ms | 325 | yes |
-| 300 | 6 uneven splits | 13.9 ms | 451 | yes |
-| 500 | 6 uneven splits | 13.8 ms | 605 | yes |
-| 512 | balanced | 14.5 ms | 578 | yes |
-| 1000 | 6 uneven splits | 26.9 ms | 1,058 | yes |
-| 1024 | balanced | 29.0 ms | 1,011 | yes |
-
-Grover over 200 qubits, on the tree
-`200=100+100 100=50+50 50=25+25 25=13+12 13=7+6 12=6+6 7=4+3 6=3+3 4=2+2 3=2+1`,
-is fully verified against theory in 13 ms. An uneven count costs no more than
-the power of two above it, and its diagram lands between its two neighbours --
-the shape of the tree is not what the cost depends on.
-
-**One thing does still want a power: `n` itself must be even for Grover and
-QFT.** `sqrt(N) = 2^(n/2)` runs through Grover's iteration count, its initial
-amplitude and its theory check, and through QFT's `2^(-n/2)` normalisation, and
-every amplitude type here carries an *integer* exponent. That is the algorithms'
-arithmetic asking, not the representation: GHZ, Bernstein-Vazirani and
-Deutsch-Jozsa take any count at all, odd ones included, and the smoke test runs
-them at 5 and 7 qubits.
+the worst case by construction -- an unstructured matrix has nothing to share --
+and is three orders of magnitude slower than the structured ones at the same
+dimension.
 
 ## Arbitrary-precision coefficients
 
@@ -496,136 +340,88 @@ The deferred semiring counts how many products coincide, and a Hadamard layer
 over `n` qubits makes that count `2^n`. With `i128` coefficients that overflows
 at 128 qubits -- exact arithmetic refusing to be wrong rather than a blow-up in
 time or memory. The `bigint` feature swaps in [`rug::Integer`], which is what
-`boost::multiprecision::cpp_int` does for the reference.
+`boost::multiprecision::cpp_int` does for the reference. On the GHZ ladder:
 
-**It costs about 11%** on GHZ (median over the sizes where both builds run, 32
-to 65536 qubits: 1.11x, never worse than 1.45x), and about 1.5x on QFT, whose
-many-exit diagrams do proportionally more coefficient arithmetic. That is far
-cheaper than it sounds, because the whole point of the deferred semiring is that
-coefficient arithmetic happens once per *exit*, not once per matrix entry -- the
-work is dominated by structure, not by numbers.
+| qubits | `i128` | `bigint` | overhead |
+|--:|--:|--:|--:|
+| 2 | 0.21 ms | 0.16 ms | 0.74x |
+| 4 | 0.30 ms | 0.26 ms | 0.87x |
+| 8 | 0.37 ms | 0.39 ms | 1.05x |
+| 16 | 0.54 ms | 0.63 ms | 1.17x |
+| 32 | 0.82 ms | 0.94 ms | 1.13x |
+| 64 | 1.43 ms | 1.63 ms | 1.14x |
+| 128 | overflow | 2.93 ms | -- |
+| 256 | overflow | 5.30 ms | -- |
+| 512 | overflow | 10 ms | -- |
+| 1,024 | overflow | 20 ms | -- |
+| 2,048 | overflow | 44 ms | -- |
+| 4,096 | overflow | 86 ms | -- |
+| 8,192 | overflow | 188 ms | -- |
+| 16,384 | overflow | 366 ms | -- |
+| 32,768 | overflow | 723 ms | -- |
+| 65,536 | overflow | 1,533 ms | -- |
 
-With `bigint` there is no qubit ceiling left, which is why the tables above run
-to 65536 on every algorithm. Without it, BV and DJ stop at 64.
+Under the ceiling the overhead is at most 17%; the sub-millisecond rows sit
+inside process-startup noise and should not be read as `bigint` winning. Above
+the ceiling it is the difference between a result and a panic. Every other number
+in this document is from the `bigint` build.
 
-## Amplitudes need range, not just precision
+## The control group: CUDD
 
-BV and DJ hit a second ceiling that has nothing to do with coefficients: with
-unnormalised Walsh gates their amplitudes run to exactly `2^n`, which leaves
-`f64`'s exponent range at about 1024 qubits. The answers came back wrong at
-1024, not slow.
+CUDD's ADDs are a BDD-family baseline, run from the reference repository's own
+`examples/cudd_test` driver with a **120-second cap** per size -- the same order
+as the budget the two CFLOBDDs ran under -- and no larger size attempted after
+one times out (`results/macos-m1pro/cudd.sh`).
 
-Every amplitude in those two algorithms is an *integer*, so this crate's
-benchmark holds them as `rug::Integer` and leaves the `2^(-(2n+1)/2)`
-normalisation symbolic. That is exact at any size -- the answer at 65536 qubits
-is `2^65536` on the nose -- and it is why the correctness column reads 1 all the
-way up. The reference reaches for 100-digit floats for the same reason; integers
-are both cheaper and exact here.
+| algorithm | last size it finishes | time there | ADD nodes | next size |
+|---|--:|--:|--:|---|
+| GHZ | 256 qubits | 234.48 ms | 516 | aborts at 512 |
+| Bernstein-Vazirani | 16 qubits | 0.45 ms | 35 | times out at 32 |
+| Deutsch-Jozsa | 16 qubits | 219.32 ms | 53,517 | times out at 32 |
+| Grover | 16 qubits | 328.69 ms | 95 | times out at 32 |
+| QFT | 16 qubits | 52.85 s | 175 | times out at 32 |
 
-GHZ keeps `f64` (its amplitudes are ±1/sqrt(2) at every size) and QFT keeps a
-double-precision complex.
+Its QFT is the one path in that driver that carries the state as a *pair* of
+ADDs, real and imaginary; the node count above is their sum, which is what the
+driver's own return value is.
 
-## What made the difference
+The gap is two to three orders of magnitude in reachable qubit count -- 16 or
+256 against 65,536 -- which is the result the CFLOBDD representation exists to
+produce. Deutsch-Jozsa is the clearest single row: 53,517 ADD nodes at 16 qubits
+against 111 and 110 for the two CFLOBDDs, and no 32-qubit run at all.
 
-Five changes came out of profiling this comparison. Three are in the library
-(1, 2 and 4); the others are in how the benchmark drives it.
-
-Change 4 postdates the Fedora run, so the Fedora timings in *Results* above are
-from before it. The macOS figures in `results/macos-m1pro/` are from after, and
-the diagrams are unchanged either way.
-
-1. **Hashed value interning** (`ValueSet` in `src/gcflobdd/matmul/mod.rs`).
-   Collapsing equal exit values used a linear scan, quadratic in the exit count.
-   Harmless for boolean work; ruinous for a Fourier-transformed state with
-   thousands of distinct amplitudes -- `perf` put 97.6% of a 16-qubit QFT in
-   `substitute`/`collapse`. Hashing (via `MatMulValue::dedup_key`), with a scan
-   retained below 16 entries: **QFT at 16 qubits, 2341 ms -> 65 ms, 31x**.
-
-2. **Cached identity operators** (`Ops` in `tests/quantum.rs`). Placing a gate
-   needs an identity for every subtree without one, and rebuilding those towers
-   dominated the gate-heavy algorithms: 22% of GHZ was `add_gcflobdd_node`, 20%
-   `add_return_map`. Building each level's identity once: **GHZ at 256 qubits,
-   45.2 ms -> 7.3 ms, 6.2x**.
-
-3. **Sorted gate slices** (`place`). Filtering the whole gate list at every tree
-   node is `O(n^2)` for a full `n`-qubit layer -- fine at 256 qubits, hopeless
-   at 65536. Splitting a sorted slice at each level makes it `O(n log n)`.
-
-4. **A controlled gate is one node, not a sum of two towers**
-   (`GcflobddT::mk_controlled`, `src/gcflobdd/matmul/controlled.rs`). Building
-   `|0><0|_c (x) I + |1><1|_c (x) U_t` from its definition costs two `place`
-   towers over the whole register and a matrix addition, per gate -- and these
-   circuits place one controlled gate per qubit. At 16384 qubits that was 1.03 s
-   of GHZ's 1.34 s, against 0.27 s for all the matrix multiplies it fed; a
-   `sample` profile put the rest in `kron_node`/`substitute` and allocation
-   underneath them. Building the node in one downward pass instead, the way the
-   reference's `MkCNOTNode` does, and caching it on `(grouping, role)`:
-   **GHZ at 65536 qubits, 6.16 s -> 1.58 s, 3.9x**, which is what took it from
-   3.6x behind the reference to level with it. Deutsch-Jozsa's wall clock, most
-   of which is the oracle it builds outside the timed region, fell 3.5x with it.
-
-   The recursion carries *tags* rather than numbers -- what each exit means, not
-   what it is worth -- so one cached node serves a CNOT, a controlled phase and
-   every amplitude type, and the values are substituted once at the top. Every
-   diagram in this document is byte-identical before and after: `smoke` checks
-   the direct construction against the sum it replaces for every control/target
-   pair on 2 to 8 qubits, and `controlled_is_the_canonical_node` checks it
-   against the tabulated dense matrix, which is pointer equality on the interned
-   node.
-
-5. **Folding uniform layers by doubling** (`uniform`). A Hadamard layer has `n`
-   identical factors, so it is `log n` squarings, not `n` placements. This is
-   what the reference's `KroneckerPower` does. **DJ at 4096 qubits, 10.3 ms ->
-   1.7 ms, 6.1x**; it turned DJ at 65536 from a 1.8x loss into a 3.8x win.
+**QFT is the one row where the ADD is the compact object, and it is a warning
+about the size column rather than a result.** At 16 qubits CUDD's ADD is 175
+nodes where the CFLOBDDs report about 132,000 -- but those 132,000 are nodes
+plus return-map entries, and the CFLOBDDs' *node* counts are 5 and 11. CUDD has
+no return maps to report and does not count its terminals, so the two numbers
+measure different things and neither is a memory figure. What is comparable is
+the time: **52.9 s for CUDD against 95 ms here**, a factor of 557. All three
+then fail at 32 qubits.
 
 ## Caveats
 
-These matter for reading the numbers honestly.
+**Timers.** Each implementation reports its own internal timer around the same
+phase of the algorithm. The reference's has 1 ms granularity, which floors
+several of its small-size rows at 0 and inflates the ratios there; the
+microsecond figures in `results/macos-m1pro/*.csv` are this crate's only.
 
-- **The C++ timer has millisecond granularity**, so its figures below ~5 ms are
-  rounded 1-4 ms and the small-size ratios are real but imprecise. This crate
-  reports microseconds (`durationUs`). The large-size rows, where both are tens
-  of milliseconds or more, are the trustworthy ones.
-- **The circuits are not identical.** GHZ in the rows above is the textbook
-  circuit -- H then a CNOT chain over `n` qubits, applied gate by gate; the
-  reference multiplies `n` CNOT matrices together over a `2n`-qubit register and
-  applies the product. Same state, different work, and a different object at the
-  end. `testGHZAlgoMatrix` runs the reference's construction for a like-for-like
-  comparison; *GHZ* above has it. BV and DJ *do* follow the reference's
-  structure, including building the oracle outside the timed region, as it does
-  -- which is why their wall-clock (4.3-4.7 s at 65536 qubits) far exceeds the
-  timed region.
-- **A state stays a vector here.** `mk_matvec` keeps a state at `n` variables;
-  the reference pads it into a `2n`-variable matrix and uses matrix multiply.
-  That is a real advantage of this crate's API, not a measurement artifact, but
-  it does mean less work per gate.
-- **Value types differ.** Exact integers (BV, DJ, and GHZ under
-  `testGHZAlgoMatrix`, whose surviving entries are exactly `2^n`), `f64` (GHZ
-  under `testGHZAlgo`) and a hand-rolled
-  double-precision complex (QFT) here; `cpp_dec_float` and `cpp_complex_100`
-  there. The reference is carrying 100-digit floats where this crate carries
-  machine words or exact integers. It is a small part of either profile --
-  CFLOBDD defers arithmetic to the top node -- and it does not explain the QFT
-  diagram-size gap, which is structural.
-- **The reference's QFT is unchecked.** Its harness prints no correctness line
-  for QFT (`correct=na`). This crate's QFT is verified against
-  `exp(2 pi i s k / 2^n) / sqrt(2^n)` at every size run.
-- **One reference harness bug was hit**: `testBVAlgo` samples until it draws a
-  non-zero string, so a seed whose secret is all zeros never terminates (seed 3
-  at 2 qubits, 120 s timeout). BV rows use seed 1.
-- **The same seed does not mean the same secret.** The reference draws its
-  planted strings from `std::mt19937`, this crate from its own xorshift, in BV,
-  DJ and Grover alike. Grover's oracle is a Kronecker fold of one projector per
-  qubit, so a string with repeated runs of bits shares more subtrees than a
-  scattered one and costs a little less; per-seed times are therefore not
-  comparable across implementations, only the medians over ten seeds are.
-- **Grover's answer is decoded differently on the two sides** -- peak amplitude
-  here, one sample there. The success probability is reported alongside so the
-  choice can be discounted; at 0.96 and above the two rules agree almost always.
-- **Grover's reference numbers are from `testGroversAlgo`**, the
-  `GroversAlgoWithV4` entry point, built in a clean worktree from that
-  repository's `HEAD` plus the one-line fix described above -- nothing else. Its
-  own working tree carries unrelated uncommitted changes to the multiply, and
-  the binary sitting there was built after them, so neither was used.
-  `results/grover_compare.csv` keeps both sets of rows, `cpp` for `HEAD` as-is
-  and `cpp-fixed` for the patched build.
+**Memory.** Peak RSS at 65,536 qubits is 280-541 MB here against 820-920 MB for
+the reference, but most of that difference is a fixed reservation: the reference
+starts at ~679 MB before it has done any work, this crate at ~3 MB. Measured as
+*growth* over an empty run, the reference is the leaner of the two -- 141 MB
+against 298 MB on 65,536-qubit GHZ.
+
+**GHZ is two circuits.** `testGHZAlgoMatrix` builds the reference's own
+construction, a 2n-qubit register held as a matrix, and is the row that compares
+with it. `testGHZAlgo` is the textbook circuit on an n-variable state vector: a
+smaller object with no reference number to compare against, listed separately as
+*GHZ (state vector)*.
+
+**Seeds.** One seed per size on GHZ, Bernstein-Vazirani and Deutsch-Jozsa; three
+on QFT and the uneven sweep; ten on Grover. Where a table gives one number for
+several seeds it is the median.
+
+**QFT above 16 qubits** is this crate only, and the reference's 16-qubit rows
+vary by seed -- 66,498 on one of three, 132,238 on the other two -- so the QFT
+size comparison rests on a small sample.

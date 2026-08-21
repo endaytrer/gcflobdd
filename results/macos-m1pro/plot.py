@@ -8,12 +8,16 @@ by the accompanying all_results.csv table view, and reinforced here by giving
 every series its own marker and dash pattern (secondary encoding, which also
 carries the figure into greyscale print).
 """
+import csv
 import os
+import statistics
+from collections import defaultdict
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-from matplotlib.ticker import LogLocator, NullFormatter
+from matplotlib.ticker import FuncFormatter, LogLocator, NullFormatter
 
 from build_tables import cell, ALGOS, ALGO_LABEL
 
@@ -27,7 +31,7 @@ OUT = os.path.join(HERE, "figures")
 os.makedirs(OUT, exist_ok=True)
 
 # --- design tokens ---------------------------------------------------------
-SURFACE = "#fcfcfb"
+SURFACE = "#ffffff"
 INK = "#0b0b0b"
 INK_2 = "#52514e"
 MUTED = "#8a8981"
@@ -48,9 +52,9 @@ STOPS = {
     ("bv", "cudd"):        ("times out\nat 32", 6, -3, "left", "top"),
     ("dj", "cudd"):        ("times out\nat 32", 6, -3, "left", "top"),
     ("grover", "cudd"):    ("times out\nat 32", 6, -3, "left", "top"),
-    ("qft", "cudd"):       ("times out\nat 16", 6, -3, "left", "top"),
+    ("qft", "cudd"):       ("times out\nat 32", 6, -3, "left", "top"),
     ("grover", "cflobdd"): ("SIGBUS at 1024", 6, 6, "left", "bottom"),
-    ("qft", "cflobdd"):    ("neither finishes\n32 qubits in 120 s", 7, -4, "left", "top"),
+    ("qft", "cflobdd"):    ("no implementation\nfinishes 32 qubits", 7, -4, "left", "top"),
 }
 
 plt.rcParams.update({
@@ -132,7 +136,10 @@ LEGEND = [Line2D([], [], color=SERIES[i]["c"], linestyle=SERIES[i]["ls"],
                  markeredgecolor=SURFACE, markeredgewidth=0.8,
                  label=SERIES[i]["label"]) for i in ORDER]
 
-TIME_LIM = (5e-3, 2e4)
+# The control group reaches 16-qubit QFT in 52.9 s, an order of magnitude above
+# anything the two CFLOBDDs take, so the ceiling has to clear it or the point
+# lands off the panel and takes its annotation with it.
+TIME_LIM = (5e-3, 1.5e5)
 SIZE_LIM = (3, 3e5)
 
 
@@ -187,6 +194,96 @@ def single(algo, field, ylabel, ylim, title, fname):
     plt.close(fig)
 
 
+# --- qubit counts that are not powers of two -------------------------------
+#
+# A second pair of figures, this crate only: the reference is indexed by level,
+# so 2^p is the only register it can build and there is nothing to compare
+# against.  Two series per panel, split on whether the count is a power of two,
+# because the question the figure answers is whether the uneven grammars sit on
+# the same curve as the even ones.
+
+UNEVEN_ALGOS = ["ghz", "bv", "dj", "grover", "qft"]
+UNEVEN_TEST = {"ghz": "ghz", "bv": "bv", "dj": "dj", "grover": "grover", "qft": "qft"}
+
+EVEN_STYLE = dict(c="#2a78d6", m="o", ls="-", label="power of two (balanced grammar)")
+ODD_STYLE = dict(c="#eb6834", m="D", ls=(0, (5, 2)), label="any other count (uneven grammar)")
+
+UNEVEN_LEGEND = [Line2D([], [], color=st["c"], linestyle=st["ls"], linewidth=1.6,
+                        marker=st["m"], markersize=4.4, markeredgecolor=SURFACE,
+                        markeredgewidth=0.8, label=st["label"])
+                 for st in (EVEN_STYLE, ODD_STYLE)]
+
+
+def uneven_points():
+    """{algo: {qubits: (median ms, median size)}} from uneven.csv."""
+    by = defaultdict(list)
+    with open(os.path.join(HERE, "uneven.csv")) as fh:
+        for r in csv.DictReader(fh):
+            assert r["status"] == "ok" and r["correct"] == "1", r
+            by[(r["algo"], int(r["qubits"]))].append(r)
+    out = defaultdict(dict)
+    for (algo, n), rs in by.items():
+        out[algo][n] = (statistics.median(int(r["duration_us"]) for r in rs) / 1000,
+                        statistics.median(int(r["conv_total"]) for r in rs))
+    return out
+
+
+def uneven_figure(index, ylabel, title, subtitle, fname):
+    pts = uneven_points()
+    fig, axes = plt.subplots(2, 3, figsize=(8.4, 5.0))
+    fig.subplots_adjust(left=0.075, right=0.90, top=0.795, bottom=0.095,
+                        wspace=0.42, hspace=0.62)
+    flat = axes.flatten()
+    for ax, algo in zip(flat, UNEVEN_ALGOS):
+        data = pts[UNEVEN_TEST[algo]]
+        for style, keep in ((EVEN_STYLE, lambda n: n & (n - 1) == 0),
+                            (ODD_STYLE, lambda n: n & (n - 1) != 0)):
+            xy = sorted((n, v[index]) for n, v in data.items() if keep(n))
+            if not xy:
+                continue
+            ax.plot([p[0] for p in xy], [p[1] for p in xy], color=style["c"],
+                    linestyle=style["ls"], linewidth=1.5, marker=style["m"],
+                    markersize=4.4, markeredgecolor=SURFACE, markeredgewidth=0.8,
+                    zorder=3)
+        ax.set_xscale("log", base=2)
+        ax.set_yscale("log")
+        ax.grid(True, which="major", color=GRID, linewidth=0.6, zorder=0)
+        ax.grid(True, which="minor", color=GRID, linewidth=0.3, alpha=0.6, zorder=0)
+        ax.set_axisbelow(True)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        # x ticks at the powers of two the panel actually covers, so the
+        # even/uneven distinction the figure is about is legible on the axis.
+        pows = sorted(n for n in data if n & (n - 1) == 0)
+        ax.set_xticks(pows)
+        ax.set_xticklabels([f"{n // 1024:,}K" if n >= 1024 else f"{n:,}" for n in pows])
+        ax.xaxis.set_minor_formatter(NullFormatter())
+        # Several of these panels span less than a decade, where the default
+        # decade-only locator leaves the y axis unlabelled; QFT spans five, where
+        # subdividing every decade would bury it.  Pick on the span.
+        lo, hi = ax.get_ylim()
+        subs = (1,) if (hi / lo) > 40 else (1, 2, 3, 5)
+        ax.yaxis.set_major_locator(LogLocator(base=10, subs=subs, numticks=20))
+        # Runtime panels drop below 1 ms, where a whole-number format prints 0.
+        ax.yaxis.set_major_formatter(
+            FuncFormatter(lambda v, _: f"{v:,.0f}" if v >= 1 else f"{v:g}"))
+        ax.yaxis.set_minor_formatter(NullFormatter())
+        ax.set_title(ALGO_LABEL[algo], color=INK, pad=5, fontweight="medium")
+        ax.set_xlabel("qubits")
+        ax.set_ylabel(ylabel)
+    flat[len(UNEVEN_ALGOS)].axis("off")
+    flat[len(UNEVEN_ALGOS)].legend(handles=UNEVEN_LEGEND, loc="center left",
+                                   fontsize=7.6, handlelength=2.4, labelspacing=0.9,
+                                   bbox_to_anchor=(-0.08, 0.62))
+    fig.text(0.075, 0.958, title, fontsize=12, color=INK, fontweight="bold", ha="left")
+    fig.text(0.075, 0.918, subtitle, fontsize=7.6, color=INK_2, ha="left",
+             va="top", linespacing=1.45)
+    for ext in ("svg", "pdf", "png"):
+        fig.savefig(os.path.join(OUT, f"{fname}.{ext}"), dpi=200)
+    plt.close(fig)
+    print("wrote", fname, "(svg, pdf, png)")
+
+
 if __name__ == "__main__":
     grid_figure("ms", "runtime (ms)", TIME_LIM,
                 "Runtime against qubit count",
@@ -207,3 +304,17 @@ if __name__ == "__main__":
         single(algo, "size", "diagram size", SIZE_LIM,
                f"{ALGO_LABEL[algo]} — diagram size", f"size_{algo}")
     print("wrote 10 per-algorithm figures (svg, pdf) to", OUT)
+
+    uneven_figure(0, "runtime (ms)",
+                  "Runtime at qubit counts that are not powers of two",
+                  "This crate only -- the reference is indexed by level and can build no other register. "
+                  "Medians over 3 seeds\nwhere the algorithm takes one; log-log. "
+                  "QFT and Grover need an even count, so they carry no odd points.",
+                  "uneven_runtime")
+
+    uneven_figure(1, "diagram size",
+                  "Diagram size at qubit counts that are not powers of two",
+                  "Nodes + edges in the reference's counting convention, log-log. "
+                  "An uneven count carries two adjacent block\nsizes per level where a power of two carries one, "
+                  "which is the whole of the difference between the curves.",
+                  "uneven_size")

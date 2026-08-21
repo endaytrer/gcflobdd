@@ -22,12 +22,12 @@ warning: `gcflobdd` (lib) generated 2 warnings
     Finished `release` profile [optimized] target(s) in 0.01s
      Running tests/matmul.rs (target/release/deps/matmul-532b904c29fac2f7)
 Dense 256x256 check (level 4):
-  built in 16 ms
-  A * A              5867 ms       8354 nodes     17.37MiB
-  A * v                27 ms       8363 nodes     17.65MiB
-  verified against the dense oracle in 27 ms
+  built in 17 ms
+  A * A              6490 ms       8354 nodes     17.37MiB
+  A * v                29 ms       8363 nodes     17.65MiB
+  verified against the dense oracle in 30 ms
 Structured, 2^2 x 2^2 (level 2):
-  I * I                 0 ms          5 nodes      536.00B
+  I * I                 1 ms          5 nodes      536.00B
   (J-I) * I             0 ms          5 nodes      792.00B
   I * (J-I)             0 ms          5 nodes      1.02KiB
   (J-I)^2               0 ms          5 nodes      1.49KiB
