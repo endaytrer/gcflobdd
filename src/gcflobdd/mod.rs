@@ -241,6 +241,29 @@ impl<'grammar, T> GcflobddT<'grammar, T> {
         );
         (nodes, edges)
     }
+
+    /// This same diagram, counted the way the reference C++ implementation's
+    /// `CountNodesAndEdges` counts its own: two edges per connection, plus the
+    /// entries of every distinct return map, plus the root return map.
+    ///
+    /// Diagnostic. [`Self::count_nodes_and_edges`] counts one edge per
+    /// connection and no return-map entries, so the two conventions differ by
+    /// far more than a constant -- on a Fourier-transformed state the return
+    /// maps alone outweigh everything else by two orders of magnitude. Compare
+    /// this figure against the reference's, never the other one.
+    pub fn count_cflobdd_convention(&self) -> (usize, usize) {
+        let (mut nodes, mut edges) = (0, 0);
+        GcflobddNode::count_cflobdd_convention(
+            &self.connection.entry_point,
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &mut nodes,
+            &mut edges,
+        );
+        // The reference adds the root connection's return map at the top node.
+        edges += self.connection.return_map.len();
+        (nodes, edges)
+    }
 }
 
 impl<'grammar, T: Eq> GcflobddT<'grammar, T> {

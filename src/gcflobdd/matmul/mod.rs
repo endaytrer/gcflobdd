@@ -71,6 +71,7 @@
 //! for the tensor product of two vectors.
 
 pub mod coefficient;
+pub(in crate::gcflobdd) mod controlled;
 mod map;
 pub(in crate::gcflobdd) mod node;
 #[cfg(test)]
@@ -83,6 +84,7 @@ use crate::gcflobdd::GcflobddT;
 use crate::gcflobdd::connection::{Connection, ConnectionPair, ConnectionT};
 use crate::gcflobdd::context::Context;
 pub use crate::gcflobdd::matmul::coefficient::Coefficient;
+use crate::gcflobdd::matmul::controlled::{Role, Tag, controlled_node};
 use crate::gcflobdd::matmul::node::{Valued, kron_node, matmul_node, matvec_node, split};
 use crate::gcflobdd::node::{GcflobddNode, GcflobddNodeType, InternalNode};
 use crate::grammar::{Grammar, GrammarNode, GrammarNodeType};
@@ -604,6 +606,56 @@ fn collapse<'grammar, T: MatMulValue>(
 }
 
 impl<'grammar, T: MatMulValue> GcflobddT<'grammar, T> {
+    /// The controlled gate `|0><0|_c (x) I + |1><1|_c (x) U_t`, where `U` is the
+    /// 2x2 matrix `gate`, row-major, `c` is `control` and `t` is `target`.
+    ///
+    /// Built directly, in one downward pass over the grammar, rather than as
+    /// that sum of two Kronecker towers -- the same trade
+    /// [`mk_identity`](Self::mk_identity) makes, and for the same reason. A
+    /// controlled gate's *structure* depends only on where the control and
+    /// target sit, so it is built once per grouping and cached, and a call
+    /// substitutes nothing but the gate's four numbers. A layer of `n` gates
+    /// therefore performs no matrix additions at all, and every grouping that
+    /// holds neither qubit -- most of them -- is a cache hit.
+    ///
+    /// Two exits merge exactly when their values coincide, so a CNOT comes out
+    /// with the two exits it would have had either way.
+    pub fn mk_controlled(
+        control: usize,
+        target: usize,
+        gate: &[T; 4],
+        one: T,
+        zero: T,
+        grammar: &'grammar Grammar,
+        context: &RefCell<Context<'grammar>>,
+    ) -> Self {
+        check_matrix_grammar(&grammar.root);
+        let qubits = grammar.root.num_vars / 2;
+        assert!(
+            control != target,
+            "a controlled gate needs two distinct qubits, both given as {control}"
+        );
+        assert!(
+            control < qubits && target < qubits,
+            "control {control} and target {target} must be qubits of a {qubits}-qubit operator"
+        );
+        let (entry_point, tags) =
+            controlled_node(&grammar.root, Role::Both(control, target), context);
+        collapse(
+            &entry_point,
+            tags.iter().map(|tag| match tag {
+                Tag::Identity => one.clone(),
+                Tag::Target(entry) => gate[*entry].clone(),
+                Tag::Zero => zero.clone(),
+                // The whole register holds the control, so no exit can still be
+                // waiting on it.
+                Tag::Control(_) => unreachable!("the control is resolved at the root"),
+            }),
+            grammar,
+            context,
+        )
+    }
+
     /// Which exit is known to hold zero, if any. It only ever prunes work: an
     /// operand whose whole subtree is that exit contributes nothing and is
     /// never descended into.

@@ -394,6 +394,48 @@ impl<'grammar> GcflobddNode<'grammar> {
         }
     }
 
+    /// The same diagram, counted the way the reference C++
+    /// `CFLOBDDInternalNode::CountNodesAndEdges` counts it: **two** edges per
+    /// connection, plus the entries of every *distinct* return map.
+    ///
+    /// Diagnostic only. [`Self::count_nodes_and_edges`] is this crate's own
+    /// convention -- one edge per connection, return maps not counted -- and the
+    /// two disagree by more than a constant, so a number from one convention
+    /// must never be compared against a number from the other.
+    pub(super) fn count_cflobdd_convention(
+        node: &Rch<Self>,
+        seen: &mut HashMap<usize, ()>,
+        seen_maps: &mut HashMap<usize, ()>,
+        nodes: &mut usize,
+        edges: &mut usize,
+    ) {
+        if seen.insert(Rc::as_ptr(node) as usize, ()).is_some() {
+            return;
+        }
+        *nodes += 1;
+        if let GcflobddNodeType::Internal(internal) = &node.node {
+            let connections: usize = internal.connections.iter().map(|l| l.len()).sum();
+            *edges += 2 * connections;
+            for layer in &internal.connections {
+                for connection in layer {
+                    // The reference interns return maps and counts each distinct
+                    // one once; ours are interned too, so dedup by handle.
+                    let key = Rc::as_ptr(&connection.return_map) as usize;
+                    if seen_maps.insert(key, ()).is_none() {
+                        *edges += connection.return_map.len();
+                    }
+                    Self::count_cflobdd_convention(
+                        &connection.entry_point,
+                        seen,
+                        seen_maps,
+                        nodes,
+                        edges,
+                    );
+                }
+            }
+        }
+    }
+
     pub fn find_one_path_to(&self, value: usize) -> Vec<Option<bool>> {
         if self.num_exits == 1 {
             debug_assert_eq!(value, 0);

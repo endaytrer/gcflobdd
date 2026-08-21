@@ -310,6 +310,137 @@ fn identity_scales_to_huge_matrices() {
     );
 }
 
+/// Bit `qubit` of `index`, with qubit 0 the most significant -- the order
+/// `from_matrix` and `entry` both use.
+fn qubit_bit(index: usize, qubit: usize, qubits: usize) -> usize {
+    (index >> (qubits - 1 - qubit)) & 1
+}
+
+/// `|0><0|_control (x) I + |1><1|_control (x) U_target`, written out in full.
+fn dense_controlled(
+    qubits: usize,
+    control: usize,
+    target: usize,
+    gate: &[i64; 4],
+) -> Vec<Vec<i64>> {
+    let n = 1usize << qubits;
+    (0..n)
+        .map(|row| {
+            (0..n)
+                .map(|col| {
+                    let bit = |q: usize| (qubit_bit(row, q, qubits), qubit_bit(col, q, qubits));
+                    let (row_control, col_control) = bit(control);
+                    if row_control != col_control {
+                        return 0;
+                    }
+                    // Every qubit the gate does not touch must be on the diagonal.
+                    let free = if row_control == 0 { control } else { target };
+                    let diagonal = (0..qubits)
+                        .filter(|q| *q != free && *q != control)
+                        .all(|q| {
+                            let (r, c) = bit(q);
+                            r == c
+                        });
+                    if !diagonal {
+                        return 0;
+                    }
+                    let (row_target, col_target) = bit(target);
+                    if row_control == 0 {
+                        (row_target == col_target) as i64
+                    } else {
+                        gate[2 * row_target + col_target]
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// `mk_controlled` must produce the *same node* as writing the matrix out and
+/// tabulating it, not merely the same entries.
+///
+/// `from_table` meets distinct values in canonical exit order by construction,
+/// so its node is the canonical one; equality here is pointer equality on the
+/// interned entry point plus the value map. A build that got the maths right but
+/// left a connection's return map non-injective would pass an entry-by-entry
+/// check and fail this one.
+#[test]
+fn controlled_is_the_canonical_node() {
+    // Four gates, chosen for how their values collide with the identity's:
+    // none (a general gate, the widest structure), the two off-diagonal entries
+    // (a CNOT, which is why a CNOT has two exits), the two diagonal ones (a
+    // controlled phase), and just the leading entry.
+    let gates: [[i64; 4]; 4] = [[2, 3, 5, 7], [0, 1, 1, 0], [1, 0, 0, -1], [1, 3, 5, 7]];
+    for (grammar, n) in matrix_grammars() {
+        let qubits = n.trailing_zeros() as usize;
+        if qubits < 2 {
+            continue;
+        }
+        // One context for the whole grammar, so every role is asked for against
+        // a cache already holding the others.
+        let context = RefCell::new(Context::default());
+        for control in 0..qubits {
+            for target in 0..qubits {
+                if control == target {
+                    continue;
+                }
+                for gate in &gates {
+                    let dense = dense_controlled(qubits, control, target, gate);
+                    let expected = GcflobddT::from_matrix(&dense, &grammar, &context);
+                    let actual = GcflobddT::mk_controlled(
+                        control, target, gate, 1i64, 0i64, &grammar, &context,
+                    );
+                    assert_eq!(
+                        actual, expected,
+                        "controlled {gate:?} on {qubits} qubits, control {control}, \
+                         target {target}: not the canonical node"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The point of building it directly: the diagram is logarithmic in the qubit
+/// count, so a register far past anything that could be written out still costs
+/// a handful of nodes.
+#[test]
+fn controlled_scales_to_huge_registers() {
+    // 2^16 variables: an operator on 32768 qubits.
+    let grammar = balanced_grammar(16);
+    let context = RefCell::new(Context::default());
+    let qubits = grammar.num_vars() / 2;
+    // `entry` indexes rows and columns with a `usize`, so it can only reach the
+    // last 64 qubits: qubit `qubits - 1 - k` is bit `k`. Put the gate there.
+    let (control, target) = (qubits - 1, qubits - 2);
+    let cnot = GcflobddT::mk_controlled(
+        control,
+        target,
+        &[0i64, 1, 1, 0],
+        1i64,
+        0i64,
+        &grammar,
+        &context,
+    );
+    // Control clear: the identity. Control set: the target flips.
+    assert_eq!(cnot.entry(0, 0), 1);
+    assert_eq!(cnot.entry(2, 2), 1);
+    assert_eq!(cnot.entry(1, 3), 1);
+    assert_eq!(cnot.entry(3, 1), 1);
+    assert_eq!(cnot.entry(1, 1), 0);
+    assert_eq!(cnot.entry(0, 2), 0);
+    assert!(
+        context.borrow().node_count() < 500,
+        "node count {} should stay logarithmic",
+        context.borrow().node_count()
+    );
+
+    // A CNOT is an involution, whatever the register size.
+    assert_eq!(cnot.mk_matmul(&cnot, &context), {
+        GcflobddT::mk_identity(1i64, 0i64, &grammar, &context)
+    });
+}
+
 #[test]
 fn matmul_survives_gc() {
     let mut state = 0x9999_8888_7777_6666u64;
