@@ -392,7 +392,7 @@ impl<'grammar, T: Clone + PartialEq> GcflobddT<'grammar, T> {
         Self {
             connection: ConnectionT {
                 entry_point: identity_node(&grammar.root, context),
-                return_map: vec![one, zero],
+                return_map: Rc::new(vec![one, zero]),
             },
             grammar,
         }
@@ -440,9 +440,9 @@ impl<'grammar, T: Clone + PartialEq> GcflobddT<'grammar, T> {
             connection: ConnectionT {
                 entry_point,
                 return_map: if match_exit == 0 {
-                    vec![one, zero]
+                    Rc::new(vec![one, zero])
                 } else {
-                    vec![zero, one]
+                    Rc::new(vec![zero, one])
                 },
             },
             grammar,
@@ -599,7 +599,7 @@ fn collapse<'grammar, T: MatMulValue>(
     GcflobddT {
         connection: ConnectionT {
             entry_point: GcflobddNode::reduce(entry_point, reduce_map.into(), num_exits, context),
-            return_map: values,
+            return_map: Rc::new(values),
         },
         grammar,
     }

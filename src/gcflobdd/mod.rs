@@ -19,7 +19,7 @@ use crate::gcflobdd::node::{GcflobddNode, log2_add};
 use crate::gcflobdd::return_map::{complement, inverse_lookup};
 use crate::grammar::Grammar;
 use connection::ConnectionT;
-use return_map::ReturnMapT;
+use return_map::{ReturnMapT, SharedReturnMap};
 
 #[cfg(feature = "fx-hash")]
 use rustc_hash::FxHashMap as HashMap;
@@ -28,7 +28,7 @@ use std::collections::HashMap;
 
 #[derive(Clone)]
 pub struct GcflobddT<'grammar, T> {
-    connection: ConnectionT<'grammar, ReturnMapT<T>>,
+    connection: ConnectionT<'grammar, SharedReturnMap<T>>,
     grammar: &'grammar Grammar,
 }
 impl<'grammar, T: std::fmt::Debug> std::fmt::Debug for GcflobddT<'grammar, T> {
@@ -127,7 +127,7 @@ macro_rules! define_int_op {
 
 impl<'grammar> Gcflobdd<'grammar> {
     fn new(
-        connection: ConnectionT<'grammar, ReturnMapT<bool>>,
+        connection: ConnectionT<'grammar, SharedReturnMap<bool>>,
         grammar: &'grammar Grammar,
     ) -> Self {
         Self {
@@ -145,7 +145,7 @@ impl<'grammar> Gcflobdd<'grammar> {
         Self::new(
             ConnectionT {
                 entry_point: node,
-                return_map: vec![false, true],
+                return_map: Rc::new(vec![false, true]),
             },
             grammar,
         )
@@ -155,7 +155,7 @@ impl<'grammar> Gcflobdd<'grammar> {
         Self::new(
             ConnectionT {
                 entry_point: node,
-                return_map: vec![true],
+                return_map: Rc::new(vec![true]),
             },
             grammar,
         )
@@ -165,14 +165,14 @@ impl<'grammar> Gcflobdd<'grammar> {
         Self::new(
             ConnectionT {
                 entry_point: node,
-                return_map: vec![false],
+                return_map: Rc::new(vec![false]),
             },
             grammar,
         )
     }
     pub fn mk_not(&self) -> Self {
         let mut connection = self.connection.clone();
-        connection.return_map = complement(&connection.return_map);
+        connection.return_map = Rc::new(complement(&connection.return_map));
         Self {
             connection,
             grammar: self.grammar,
@@ -329,7 +329,7 @@ impl<'grammar, T: Copy> GcflobddT<'grammar, T> {
         GcflobddT {
             connection: ConnectionT {
                 entry_point,
-                return_map: mapped_return_map,
+                return_map: Rc::new(mapped_return_map),
             },
             grammar: self.grammar,
         }
@@ -358,7 +358,7 @@ impl<'grammar, T: Clone + PartialEq> GcflobddT<'grammar, T> {
         Self {
             connection: ConnectionT {
                 entry_point,
-                return_map,
+                return_map: Rc::new(return_map),
             },
             grammar,
         }
@@ -373,7 +373,7 @@ impl<'grammar, T: Clone + PartialEq> GcflobddT<'grammar, T> {
         Self {
             connection: ConnectionT {
                 entry_point: GcflobddNode::mk_no_distinction(&grammar.root, context),
-                return_map: vec![value],
+                return_map: Rc::new(vec![value]),
             },
             grammar,
         }
@@ -413,7 +413,7 @@ impl<'grammar, T> GcflobddT<'grammar, T> {
         GcflobddT {
             connection: ConnectionT {
                 entry_point,
-                return_map: new_return_handle,
+                return_map: Rc::new(new_return_handle),
             },
             grammar: self.grammar,
         }
@@ -477,7 +477,7 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
         GcflobddT {
             connection: ConnectionT {
                 entry_point,
-                return_map: mapped_return_map,
+                return_map: Rc::new(mapped_return_map),
             },
             grammar: self.grammar,
         }

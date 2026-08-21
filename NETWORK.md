@@ -11,6 +11,10 @@ are strictly sequential; nothing else was on the machine.
 no GMP). OpenJDK 24.0.1, `-Xmx12g`. NDD at `c8414b4`, its core recompiled from
 source rather than from its prebuilt jar, which predates NDD's int-handle rewrite.
 
+Per-operation costs quoted below come from [`tests/opbench.rs`](tests/opbench.rs)
+(`cargo test --release --test opbench`), which also reports allocations per
+operation.
+
 Harness, raw runs, scripts and figures: [`bench/netverify/`](bench/netverify),
 [`results/macos-m1pro/netverify.csv`](results/macos-m1pro/netverify.csv),
 [`results/macos-m1pro/netverify_all.csv`](results/macos-m1pro/netverify_all.csv).
@@ -96,57 +100,72 @@ predicates, all-pairs reachability.
 
 | k | BDD (JDD) | NDD | GCFLOBDD field-grouped | aligned-balanced | aligned-balanced-shared |
 |--:|--:|--:|--:|--:|--:|
-| 4 | **45 ms** | 57 | 78 | 53 | 51 |
-| 6 | **141 ms** | 142 | 396 | 247 | 257 |
-| 8 | 410 ms | **238 ms** | 1,431 | 848 | 837 |
-| 10 | 1,522 ms | **641 ms** | 5,209 | 3,227 | 3,197 |
-| 12 | 5,037 ms | **1,881 ms** | 15,419 | 10,555 | 10,428 |
+| 4 | **44 ms** | 51 | 81 | 47 | 48 |
+| 6 | 146 ms | **109 ms** | 379 | 240 | 215 |
+| 8 | 418 ms | **228 ms** | 1,333 | 772 | 824 |
+| 10 | 1,449 ms | **639 ms** | 5,002 | 2,902 | 2,846 |
+| 12 | 4,871 ms | **1,767 ms** | 16,437 | 9,978 | 10,762 |
 
 ![runtime](results/macos-m1pro/figures/netverify_runtime.svg)
 
 **NDD's claim reproduces.** It starts level with the BDD and pulls away as the
-problem grows — 1.7x at k=8, 2.4x at k=10, **2.7x at k=12** — which is the shape
+problem grows — 1.8x at k=8, 2.3x at k=10, **2.8x at k=12** — which is the shape
 its paper reports, on an independent harness.
 
-**GCFLOBDD is slower here, by a steady factor.** The best grammar runs 2.07x the
-BDD's time at k=12 and 2.1x at k=10; the ratio is flat from k=8 up, so nothing is
-diverging — it is a constant factor, not a scaling problem. Against NDD it is 5.5x.
+**GCFLOBDD is slower here, by a steady factor.** The best grammar runs about 2x
+the BDD's time from k=8 up; the ratio is flat, so nothing is diverging — it is a
+constant factor, not a scaling problem. Against NDD it is 6x at k=12.
 
-### Where the constant factor comes from — not the JNI
+### Where the constant factor comes from
 
 The obvious suspect is the JNI boundary, since GCFLOBDD is the only engine here
-that crosses it per operation. It is not the cause. `netbench.JniProbe` times
-5M already-cached `and` calls:
+that crosses it per operation. It is not the cause. `netbench.JniProbe` times 5M
+already-cached `and` calls, and `tests/opbench.rs` times the same thing with no
+JVM in the loop:
 
 | | ns per operation |
 |---|--:|
 | JDD `and`, cache hit | **2.3** |
-| JNI boundary crossing alone | **5.0** |
-| GCFLOBDD `and`, cache hit | **156.3** |
-| ...of which is the engine, not the boundary | **151.4** |
+| JNI boundary crossing alone | **4.3** |
+| GCFLOBDD `and`, cache hit (through JNI) | **54.1** |
+| GCFLOBDD `and`, cache hit (pure Rust) | **18.6** |
 
-The boundary is 3% of it. The cost is in the engine, and it is structural:
-`ReturnMapT<T>` is `Vec<T>` ([`return_map.rs:1`](src/gcflobdd/return_map.rs#L1)),
-and `get_op_cache` takes both operands **by value**
-([`context.rs:346`](src/gcflobdd/context.rs#L346)), so merely *probing* the op
-cache clones two `Vec<bool>` return maps and clones the result — three heap
-allocations on every cache hit.
+The boundary is under a tenth of it. But neither is the cache-hit path the
+answer, and an earlier version of this document got that wrong: it observed that
+the atomic-predicate stage's runtime divided by the cached-`and` cost came out
+near the loop-trip count, and concluded the constant explained the stage. That
+was a coincidence of two numbers, not a cause.
 
-This is exactly the workload that exposes it. The quantum benchmarks in
-[`BENCHMARKS.md`](BENCHMARKS.md) do a small number of large operations, where a
-per-operation constant disappears. Network verification does tens of millions of
-tiny ones on diagrams of a few hundred nodes: at k=12 the atomic-predicate stage
-runs between 34M and 67M loop trips (892 predicates against an atom set growing to
-75,408), each trip one conjunction and sometimes a difference.
+**The atomic-predicate loop misses the cache almost every time.** It conjoins a
+*different* atom with the predicate on every iteration, so the operation cache
+has nothing to return and the work is the pair-map and reduction underneath.
+`tests/opbench.rs` runs that loop directly:
 
-Those two numbers meet. The stage takes 10,107 ms for `aligned-balanced-shared`,
-and 10,107 ms at 151.4 ns is **67M operations** — the top of the range derived
-from the loop bounds, arrived at independently. GCFLOBDD's time on this stage is
-accounted for by the per-operation constant and nothing else.
+| | ns per conjunction |
+|---|--:|
+| `and`, cache hit | **18.6** |
+| `and`, on the atomic-predicate loop (misses) | **1,880** |
 
-**Interning the return map, or keying the op cache by reference, is the single
-change that would move these numbers** — and it would not touch the diagrams at
-all.
+A hundredfold apart. Cutting the cache-hit path 4.6x — which
+[`SharedReturnMap`](src/gcflobdd/return_map.rs) did, by putting the return map
+behind an `Rc` so cloning an operand is a refcount bump rather than a heap
+allocation — moved this whole benchmark by about 6%, inside the noise of the
+table above.
+
+What the miss path actually costs is **49.5 heap allocations per conjunction**,
+counted with a counting global allocator in `opbench`. At the ~20-30 ns a
+macOS malloc/free round trip takes, that is most of the 1,880 ns. The allocations
+are small `Vec`s — return maps, reduce maps, connection lists — spread across the
+recursive walk (about 4 `pair_map` recursions per conjunction, so ~12
+allocations each), not concentrated anywhere. The `Rc` change removed three of
+them.
+
+**So the next step is not another local fix.** Giving the small maps inline
+storage (a `SmallVec`-style representation: a boolean return map holds at most
+two entries, a boolean reduce map at most four) would take out most of the
+remaining fifty. That is a representation change across the core rather than a
+patch, which is why it is written down here rather than done. `opbench` reports
+the allocation count on every run, so the effect of trying it is one command away.
 
 ## Diagram size
 
@@ -188,11 +207,11 @@ splits it. JDD keeps its live count private, so it appears only in the RSS colum
 
 | k | NDD (nodes + labels) | GCFLOBDD field-grouped | aligned-balanced-shared | RSS: BDD | NDD | GCFLOBDD-abs |
 |--:|--:|--:|--:|--:|--:|--:|
-| 4 | 35,409 | **8,742** | 19,454 | 199 MB | 203 MB | **68 MB** |
-| 6 | 71,938 | **31,641** | 80,741 | 207 MB | 226 MB | **127 MB** |
-| 8 | **129,922** | 100,537 | 271,182 | **235 MB** | 254 MB | 305 MB |
-| 10 | **255,808** | 273,055 | 863,278 | **436 MB** | 481 MB | 1,047 MB |
-| 12 | **608,864** | 644,408 | 2,315,926 | 835 MB | **737 MB** | 3,090 MB |
+| 4 | 35,409 | **8,742** | 19,454 | 197 MB | 205 MB | **67 MB** |
+| 6 | 71,938 | **31,641** | 80,741 | 207 MB | 219 MB | **119 MB** |
+| 8 | **129,922** | 100,537 | 271,182 | **235 MB** | 246 MB | 289 MB |
+| 10 | **255,808** | 273,055 | 863,278 | **459 MB** | 482 MB | 961 MB |
+| 12 | **608,864** | 644,408 | 2,315,926 | 806 MB | **739 MB** | 2,938 MB |
 
 ![peak memory](results/macos-m1pro/figures/netverify_memory.svg)
 
@@ -201,8 +220,8 @@ Field-grouped GCFLOBDD lands within 6% of NDD's total node count at k=12
 BDD leaf per field, under a different algebra.
 
 The memory picture inverts with scale. GCFLOBDD starts at a third of the others
-(68 MB against ~200 MB, because its nodes live outside the Java heap and the JVM's
-own floor dominates the Java engines) and ends at 3.7x the BDD's.
+(67 MB against ~200 MB, because its nodes live outside the Java heap and the JVM's
+own floor dominates the Java engines) and ends at 3.6x the BDD's.
 
 The two GCFLOBDD grammars trade off against each other in the way their shapes
 predict. At k=12 `aligned-balanced-shared` holds 3.6x more live nodes than
@@ -221,11 +240,13 @@ comparable between rows, not against a native process.
 Both halves are consistent across every size measured, and neither is a scaling
 effect: the size advantage is roughly constant in k, and so is the runtime deficit.
 
-The runtime gap has an identified, local cause with a measurement behind it, and
-it is not the JNI. Until the return map stops being cloned on every cache probe,
-a workload made of tens of millions of small conjunctions will pay 151 ns for each
-one, and no grammar choice changes that — the three grammars differ from each
-other by 1.5x while all three sit 2-3x behind the BDD.
+The runtime gap has a measured cause, and it is neither the JNI (4.3 ns a
+crossing) nor the operation cache (18.6 ns a hit). It is that a cache *miss* —
+which is what this workload is made of — costs 1,880 ns and 49.5 heap
+allocations, in small `Vec`s scattered through the recursive walk. No grammar
+choice changes that: the three grammars differ from each other by 1.6x while all
+three sit around 2x behind the BDD. Inline storage for the small maps is the
+change that would move it.
 
 The grammar result stands on its own and is actionable now: **align coarse splits
 to field boundaries, and share one subtree per width**. That is free, and it is
