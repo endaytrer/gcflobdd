@@ -14,6 +14,7 @@ use rustc_hash::FxHashMap as HashMap;
 
 #[cfg(not(feature = "fx-hash"))]
 use std::collections::HashMap;
+use crate::gcflobdd::return_map::{ExitVec, ReturnMapT};
 
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub enum BddNode {
@@ -189,7 +190,7 @@ impl BddNode {
         }
 
         let mut leaf_map = HashMap::default();
-        let mut return_map = Vec::with_capacity(lhs_num_exits * rhs_num_exits);
+        let mut return_map = ReturnMapT::with_capacity(lhs_num_exits * rhs_num_exits);
         let mut pair_cache = HashMap::default();
         let entry_point = Self::pair_product_recursive(
             lhs,
@@ -215,7 +216,7 @@ impl BddNode {
         rhs: &Rch<Self>,
         context: &RefCell<Context<'_>>,
         leaf_map: &mut HashMap<(usize, usize), usize>,
-        return_map: &mut Vec<(usize, usize)>,
+        return_map: &mut ReturnMapT<(usize, usize)>,
         pair_cache: &mut HashMap<(u64, u64), Rch<Self>>,
     ) -> Rch<Self> {
         let hash1 = lhs.hash_code();
@@ -329,7 +330,7 @@ impl BddNode {
     pub fn pair_map(
         lhs: &Rch<Self>,
         rhs: &Rch<Self>,
-        reduce_matrix: &Rch<Vec<usize>>,
+        reduce_matrix: &Rch<ExitVec>,
         lhs_num_exits: usize,
         rhs_num_exits: usize,
         context: &RefCell<Context<'_>>,
@@ -341,7 +342,7 @@ impl BddNode {
             return t;
         }
         let mut leaf_map = HashMap::default();
-        let mut return_map = Vec::with_capacity(lhs_num_exits * rhs_num_exits);
+        let mut return_map = ReturnMapT::with_capacity(lhs_num_exits * rhs_num_exits);
         let mut cache = HashMap::default();
 
         let entry_point = Self::pair_map_recursive(
@@ -373,7 +374,7 @@ impl BddNode {
         lhs_num_exits: usize,
         context: &RefCell<Context<'_>>,
         leaf_map: &mut HashMap<usize, usize>,
-        return_map: &mut Vec<usize>,
+        return_map: &mut ReturnMapT<usize>,
         pair_cache: &mut HashMap<(u64, u64), Rch<Self>>,
     ) -> Rch<Self> {
         let hash1 = lhs.hash_code();

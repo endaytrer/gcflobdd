@@ -39,6 +39,8 @@ use crate::gcflobdd::matmul::node::split;
 use crate::gcflobdd::node::{GcflobddNode, GcflobddNodeType, InternalNode};
 use crate::grammar::{GrammarNode, GrammarNodeType};
 use crate::utils::hash_cache::Rch;
+use smallvec::smallvec;
+use crate::gcflobdd::connection::ConnectionLayer;
 
 /// What one exit of a block's node means.
 ///
@@ -165,7 +167,8 @@ fn one_qubit_node<'grammar>(
         Role::Both(..) => unreachable!("one qubit cannot be both the control and the target"),
         _ => unreachable!("a one-qubit grouping only has qubit 0"),
     };
-    GcflobddNode::from_table(grammar, &table, context)
+    let (node, tags) = GcflobddNode::from_table(grammar, &table, context);
+    (node, tags.into_vec())
 }
 
 /// A grouping that splits into two, `A` covering the leading qubits.
@@ -191,7 +194,7 @@ fn split_node<'grammar>(
     // Walking `A`'s exits in order, and each one's sub-node in its own exit
     // order, is exactly the node's traversal order -- so numbering the result's
     // exits by first appearance numbers them canonically.
-    let b_connections = a_tags
+    let b_connections: ConnectionLayer = a_tags
         .iter()
         .map(|tag_a| {
             let (b_node, b_tags) = match tag_a {
@@ -215,7 +218,7 @@ fn split_node<'grammar>(
         num_exits: exits.len(),
         grammar,
         node: GcflobddNodeType::Internal(InternalNode {
-            connections: vec![vec![a_connection], b_connections],
+            connections: vec![smallvec![a_connection], b_connections],
         }),
     });
     (node, exits)

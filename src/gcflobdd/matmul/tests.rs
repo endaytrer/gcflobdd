@@ -851,6 +851,8 @@ fn kron_matches_dense_oracle() {
     for (ga, na) in kron_operand_grammars() {
         for (gb, nb) in kron_operand_grammars() {
             let combined = ga.concat(&gb);
+            let (va, vb) = (ga.halved(), gb.halved());
+            let combined_vector = va.concat(&vb);
             let context = RefCell::new(Context::default());
 
             let a = random_matrix(na, &mut state, 3);
@@ -899,6 +901,11 @@ fn kron_preserves_structural_identities() {
     for (ga, na) in kron_operand_grammars() {
         for (gb, nb) in kron_operand_grammars() {
             let combined = ga.concat(&gb);
+            // Declared before the context: it borrows them, and `SmallVec`'s
+            // `Drop` carries no `#[may_dangle]`, so dropck now insists on the
+            // order the borrow already implied.
+            let (va, vb) = (ga.halved(), gb.halved());
+            let combined_vector = va.concat(&vb);
             let context = RefCell::new(Context::default());
 
             // I_a (x) I_b is the identity of the combined space -- and must be
@@ -912,8 +919,6 @@ fn kron_preserves_structural_identities() {
             );
 
             // e_i (x) e_j = e_(i * nb + j).
-            let (va, vb) = (ga.halved(), gb.halved());
-            let combined_vector = va.concat(&vb);
             for (i, j) in [(0, 0), (1, 0), (0, 1), (na - 1, nb - 1)] {
                 let ei = GcflobddT::mk_basis_vector(i, 1i64, 0i64, &va, &context);
                 let ej = GcflobddT::mk_basis_vector(j, 1i64, 0i64, &vb, &context);
@@ -1022,6 +1027,7 @@ fn kron_folds_to_huge_operators() {
         let doubled = grammars[i].concat(&grammars[i]);
         grammars.push(doubled);
     }
+    let vector_grammar = grammars[FOLDS].halved();
     let context = RefCell::new(Context::default());
 
     let hadamard = vec![vec![1i64, 1], vec![1, -1]];
@@ -1056,7 +1062,6 @@ fn kron_folds_to_huge_operators() {
     );
 
     // The fold still composes with the other operations.
-    let vector_grammar = grammars[FOLDS].halved();
     let basis = GcflobddT::mk_basis_vector(0, 1i64, 0i64, &vector_grammar, &context);
     let column = walsh.mk_matvec(&basis, &context);
     assert_eq!(column.component(0), 1);

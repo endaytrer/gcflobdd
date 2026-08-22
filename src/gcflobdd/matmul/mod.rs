@@ -90,6 +90,8 @@ use crate::gcflobdd::node::{GcflobddNode, GcflobddNodeType, InternalNode};
 use crate::grammar::{Grammar, GrammarNode, GrammarNodeType};
 use crate::utils::hash_cache::Rch;
 use crate::utils::{HashMap, HashSet, new_hash_map, new_hash_set};
+use smallvec::smallvec;
+use crate::gcflobdd::return_map::ExitVec;
 
 /// The values a matrix built out of [`GcflobddT`] can hold.
 ///
@@ -317,18 +319,18 @@ fn identity_node<'grammar>(
         (
             Connection::new(
                 GcflobddNode::mk_distinction(0, g1, context),
-                vec![0, 1],
+                smallvec![0, 1],
                 context,
             ),
-            vec![
+            smallvec![
                 Connection::new(
                     GcflobddNode::mk_distinction(0, g2, context),
-                    vec![0, 1],
+                    smallvec![0, 1],
                     context,
                 ),
                 Connection::new(
                     GcflobddNode::mk_distinction(0, g2, context),
-                    vec![1, 0],
+                    smallvec![1, 0],
                     context,
                 ),
             ],
@@ -336,12 +338,12 @@ fn identity_node<'grammar>(
     } else {
         // Diagonal cells hold an identity block, every other cell is all-off.
         (
-            Connection::new(identity_node(g1, context), vec![0, 1], context),
-            vec![
-                Connection::new(identity_node(g2, context), vec![0, 1], context),
+            Connection::new(identity_node(g1, context), smallvec![0, 1], context),
+            smallvec![
+                Connection::new(identity_node(g2, context), smallvec![0, 1], context),
                 Connection::new(
                     GcflobddNode::mk_no_distinction(g2, context),
-                    vec![1],
+                    smallvec![1],
                     context,
                 ),
             ],
@@ -351,7 +353,7 @@ fn identity_node<'grammar>(
         num_exits: 2,
         grammar,
         node: GcflobddNodeType::Internal(InternalNode {
-            connections: vec![vec![a_connection], b_connections],
+            connections: vec![smallvec![a_connection], b_connections],
         }),
     })
 }
@@ -592,7 +594,7 @@ fn collapse<'grammar, T: MatMulValue>(
     context: &RefCell<Context<'grammar>>,
 ) -> GcflobddT<'grammar, T> {
     let mut interner = ValueSet::default();
-    let reduce_map: Vec<usize> = exit_values.map(|value| interner.intern(value)).collect();
+    let reduce_map: ExitVec = exit_values.map(|value| interner.intern(value)).collect();
     let values = interner.values;
 
     let num_exits = values.len();
@@ -841,11 +843,11 @@ fn basis_node<'grammar>(
         // The matching half is reached first, so the low node's exits are
         // registered first and its numbering carries over unchanged.
         (
-            vec![
-                Connection::new(b_node, vec![0, 1], context),
+            smallvec![
+                Connection::new(b_node, smallvec![0, 1], context),
                 Connection::new(
                     GcflobddNode::mk_no_distinction(h2, context),
-                    vec![1 - b_match],
+                    smallvec![1 - b_match],
                     context,
                 ),
             ],
@@ -855,15 +857,15 @@ fn basis_node<'grammar>(
         // Everything under the first exit mismatches, so exit 0 is the
         // mismatch and the match becomes exit 1.
         (
-            vec![
+            smallvec![
                 Connection::new(
                     GcflobddNode::mk_no_distinction(h2, context),
-                    vec![0],
+                    smallvec![0],
                     context,
                 ),
                 Connection::new(
                     b_node,
-                    if b_match == 0 { vec![1, 0] } else { vec![0, 1] },
+                    if b_match == 0 { smallvec![1, 0] } else { smallvec![0, 1] },
                     context,
                 ),
             ],
@@ -872,12 +874,12 @@ fn basis_node<'grammar>(
     };
     // Built before the node is interned: `add_gcflobdd_node` holds the context
     // borrow, and `Connection::new` needs it too.
-    let a_connection = Connection::new(a_node, vec![0, 1], context);
+    let a_connection = Connection::new(a_node, smallvec![0, 1], context);
     let node = context.borrow_mut().add_gcflobdd_node(GcflobddNode {
         num_exits: 2,
         grammar,
         node: GcflobddNodeType::Internal(InternalNode {
-            connections: vec![vec![a_connection], b_connections],
+            connections: vec![smallvec![a_connection], b_connections],
         }),
     });
     (node, match_exit)

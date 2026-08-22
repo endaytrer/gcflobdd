@@ -23,11 +23,26 @@ struct Counting;
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 static BYTES: AtomicUsize = AtomicUsize::new(0);
+/// Allocations bucketed by size class, so "lots of small Vecs" can be checked
+/// rather than assumed. Bucket i covers sizes in [2^i, 2^(i+1)).
+static BUCKETS: [AtomicUsize; 12] = [const { AtomicUsize::new(0) }; 12];
+
+fn bucket_of(size: usize) -> usize {
+    (usize::BITS - size.max(1).leading_zeros()) as usize - 1
+}
+
+fn buckets_snapshot() -> [usize; 12] {
+    std::array::from_fn(|i| BUCKETS[i].load(Ordering::Relaxed))
+}
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::Relaxed);
         BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        let b = bucket_of(layout.size());
+        if b < BUCKETS.len() {
+            BUCKETS[b].fetch_add(1, Ordering::Relaxed);
+        }
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -210,10 +225,12 @@ fn main() {
     // is exactly the mistake that made the cache probe look like the bottleneck.
     let predicates = prefix_predicates(&vars, &context, 48);
     let allocs_before = ALLOCS.load(Ordering::Relaxed);
+    let buckets_before = buckets_snapshot();
     let t0 = Instant::now();
     let (atoms, ops) = atomic_predicates(&predicates, &context);
     let elapsed = t0.elapsed();
     let allocs = ALLOCS.load(Ordering::Relaxed) - allocs_before;
+    let buckets_after = buckets_snapshot();
     let per_op = elapsed.as_nanos() as f64 / ops as f64;
     println!(
         "{:<28} {:>8.1} ns/op   ({ops} conjunctions -> {atoms} atoms, {} ms)",
@@ -226,6 +243,21 @@ fn main() {
         "  of which allocation:",
         allocs as f64 / ops as f64
     );
+    println!("  by size class:");
+    for i in 0..BUCKETS.len() {
+        let n = buckets_after[i] - buckets_before[i];
+        if n == 0 {
+            continue;
+        }
+        println!(
+            "    {:>5}..{:<5} bytes  {:>9}  {:>5.1}/op  {:>4.0}%",
+            1usize << i,
+            (1usize << (i + 1)) - 1,
+            n,
+            n as f64 / ops as f64,
+            100.0 * n as f64 / allocs as f64
+        );
+    }
 
     println!();
     println!(

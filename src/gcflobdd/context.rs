@@ -21,6 +21,8 @@ use std::{
     hash::DefaultHasher,
 };
 
+use crate::gcflobdd::return_map::ExitVec;
+
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct ReductionCacheKey(usize, Vec<usize>);
 
@@ -59,7 +61,7 @@ pub struct Context<'grammar> {
     bdd_node_table: HashSet<Rch<BddNode>>,
 
     return_map_table: HashSet<Rch<ReturnMap>>,
-    reduce_matrix_table: HashSet<Rch<Vec<usize>>>,
+    reduce_matrix_table: HashSet<Rch<ExitVec>>,
 
     // caches
     pair_product_cache: HashMap<(usize, usize), ConnectionPair<'grammar>>,
@@ -128,7 +130,7 @@ impl<'grammar> Context<'grammar> {
         self.return_map_table.insert(rch.clone());
         rch
     }
-    pub(super) fn add_reduce_matrix(&mut self, op_matrix: Vec<usize>) -> Rch<Vec<usize>> {
+    pub(super) fn add_reduce_matrix(&mut self, op_matrix: ExitVec) -> Rch<ExitVec> {
         let mut hasher = DefaultHasher::default();
         op_matrix.hash(&mut hasher);
         let hash = hasher.finish();
@@ -174,7 +176,7 @@ impl<'grammar> Context<'grammar> {
         &self,
         n1: &Rch<GcflobddNode>,
         n2: &Rch<GcflobddNode>,
-        op_matrix: &Rch<Vec<usize>>,
+        op_matrix: &Rch<ExitVec>,
     ) -> Option<Connection<'grammar>> {
         let hash1 = Rc::as_ptr(n1) as usize;
         let hash2 = Rc::as_ptr(n2) as usize;
@@ -185,7 +187,7 @@ impl<'grammar> Context<'grammar> {
         &self,
         n1: &Rch<BddNode>,
         n2: &Rch<BddNode>,
-        op_matrix: &Rch<Vec<usize>>,
+        op_matrix: &Rch<ExitVec>,
     ) -> Option<BddConnection> {
         let hash1 = Rc::as_ptr(n1) as usize;
         let hash2 = Rc::as_ptr(n2) as usize;
@@ -296,7 +298,7 @@ impl<'grammar> Context<'grammar> {
         &mut self,
         n1: &Rch<GcflobddNode>,
         n2: &Rch<GcflobddNode>,
-        op_matrix: &Rch<Vec<usize>>,
+        op_matrix: &Rch<ExitVec>,
         conn: Connection<'grammar>,
     ) {
         let hash1 = Rc::as_ptr(n1) as usize;
@@ -308,7 +310,7 @@ impl<'grammar> Context<'grammar> {
         &mut self,
         n1: &Rch<BddNode>,
         n2: &Rch<BddNode>,
-        op_matrix: &Rch<Vec<usize>>,
+        op_matrix: &Rch<ExitVec>,
         conn: BddConnection,
     ) {
         let hash1 = Rc::as_ptr(n1) as usize;
@@ -386,7 +388,7 @@ impl<'grammar> Context<'grammar> {
         total_size +=
             self.return_map_table.len() * (size_of::<Rch<ReturnMap>>() + size_of::<ReturnMap>());
         total_size += self.reduce_matrix_table.len()
-            * (size_of::<Rch<Vec<usize>>>() + size_of::<Vec<usize>>());
+            * (size_of::<Rch<ExitVec>>() + size_of::<ExitVec>());
 
         total_size += self.pair_product_cache.len()
             * (size_of::<(u64, u64)>() + size_of::<ConnectionPair<'grammar>>());

@@ -19,12 +19,13 @@ use crate::gcflobdd::node::{GcflobddNode, log2_add};
 use crate::gcflobdd::return_map::{complement, inverse_lookup};
 use crate::grammar::Grammar;
 use connection::ConnectionT;
-use return_map::{ReturnMapT, SharedReturnMap};
+use return_map::{ExitVec, ReturnMapT, SharedReturnMap};
 
 #[cfg(feature = "fx-hash")]
 use rustc_hash::FxHashMap as HashMap;
 #[cfg(not(feature = "fx-hash"))]
 use std::collections::HashMap;
+use smallvec::smallvec;
 
 #[derive(Clone)]
 pub struct GcflobddT<'grammar, T> {
@@ -321,7 +322,7 @@ impl<'grammar, T: Copy> GcflobddT<'grammar, T> {
             &rhs.connection.entry_point,
             context,
         );
-        let mapped_return_map = return_map
+        let mapped_return_map: Vec<(T, T)> = return_map
             .into_iter()
             .map(|(i, j)| (self.connection.return_map[i], rhs.connection.return_map[j]))
             .collect();
@@ -358,7 +359,7 @@ impl<'grammar, T: Clone + PartialEq> GcflobddT<'grammar, T> {
         Self {
             connection: ConnectionT {
                 entry_point,
-                return_map: Rc::new(return_map),
+                return_map: Rc::new(return_map.into_vec()),
             },
             grammar,
         }
@@ -386,7 +387,7 @@ impl<'grammar, T> GcflobddT<'grammar, T> {
         f: impl Fn(&T) -> V,
         context: &RefCell<Context<'grammar>>,
     ) -> GcflobddT<'grammar, V> {
-        let mut new_return_handle = vec![];
+        let mut new_return_handle: ReturnMapT<V> = smallvec![];
         let mapping_array = self
             .connection
             .return_map
@@ -401,7 +402,7 @@ impl<'grammar, T> GcflobddT<'grammar, T> {
                         new_return_handle.len() - 1
                     })
             })
-            .collect::<Vec<_>>();
+            .collect::<ExitVec>();
         let num_exits = new_return_handle.len();
         let entry_point = GcflobddNode::reduce(
             &self.connection.entry_point,
@@ -413,7 +414,7 @@ impl<'grammar, T> GcflobddT<'grammar, T> {
         GcflobddT {
             connection: ConnectionT {
                 entry_point,
-                return_map: Rc::new(new_return_handle),
+                return_map: Rc::new(new_return_handle.into_vec()),
             },
             grammar: self.grammar,
         }
@@ -436,11 +437,11 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
         op: impl Fn(&T, &T) -> T,
         context: &RefCell<Context<'grammar>>,
     ) -> Self {
-        let mut new_return_handle = vec![];
+        let mut new_return_handle: ReturnMapT<T> = smallvec![];
         let lhs_num_exits = self.connection.entry_point.get_num_exits();
         let rhs_num_exits = rhs.connection.entry_point.get_num_exits();
 
-        let mut reduce_map = vec![0; lhs_num_exits * rhs_num_exits];
+        let mut reduce_map: ExitVec = smallvec![0; lhs_num_exits * rhs_num_exits];
 
         for j in 0..lhs_num_exits {
             for k in 0..rhs_num_exits {
@@ -472,7 +473,7 @@ impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
             num_exits,
             context,
         );
-        let mapped_return_map = return_map.iter().map(|i| new_return_handle[*i]).collect();
+        let mapped_return_map: Vec<T> = return_map.iter().map(|i| new_return_handle[*i]).collect();
 
         GcflobddT {
             connection: ConnectionT {

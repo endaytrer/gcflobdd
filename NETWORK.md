@@ -8,7 +8,7 @@ and all-pairs reachability over a data plane.
 are strictly sequential; nothing else was on the machine.
 
 **Builds.** rustc 1.95.0, `cargo build --release` in `gcflobdd-jni` (no `rug`,
-no GMP). OpenJDK 24.0.1, `-Xmx12g`. NDD at `c8414b4`, its core recompiled from
+no GMP), `smallvec` 1.15.2. OpenJDK 24.0.1, `-Xmx12g`. NDD at `c8414b4`, its core recompiled from
 source rather than from its prebuilt jar, which predates NDD's int-handle rewrite.
 
 Per-operation costs quoted below come from [`tests/opbench.rs`](tests/opbench.rs)
@@ -100,72 +100,85 @@ predicates, all-pairs reachability.
 
 | k | BDD (JDD) | NDD | GCFLOBDD field-grouped | aligned-balanced | aligned-balanced-shared |
 |--:|--:|--:|--:|--:|--:|
-| 4 | **44 ms** | 51 | 81 | 47 | 48 |
-| 6 | 146 ms | **109 ms** | 379 | 240 | 215 |
-| 8 | 418 ms | **228 ms** | 1,333 | 772 | 824 |
-| 10 | 1,449 ms | **639 ms** | 5,002 | 2,902 | 2,846 |
-| 12 | 4,871 ms | **1,767 ms** | 16,437 | 9,978 | 10,762 |
+| 4 | 43 ms | 50 | 72 | 42 | **41 ms** |
+| 6 | 130 ms | **105 ms** | 322 | 192 | 180 |
+| 8 | 381 ms | **214 ms** | 1,203 | 646 | 715 |
+| 10 | 1,464 ms | **606 ms** | 4,390 | 2,550 | 2,802 |
+| 12 | 5,121 ms | **1,713 ms** | 13,108 | 8,853 | 9,218 |
 
 ![runtime](results/macos-m1pro/figures/netverify_runtime.svg)
 
 **NDD's claim reproduces.** It starts level with the BDD and pulls away as the
-problem grows — 1.8x at k=8, 2.3x at k=10, **2.8x at k=12** — which is the shape
+problem grows — 1.8x at k=8, 2.4x at k=10, **3.0x at k=12** — which is the shape
 its paper reports, on an independent harness.
 
-**GCFLOBDD is slower here, by a steady factor.** The best grammar runs about 2x
-the BDD's time from k=8 up; the ratio is flat, so nothing is diverging — it is a
-constant factor, not a scaling problem. Against NDD it is 6x at k=12.
+**GCFLOBDD is slower here, by a steady factor.** The best grammar is *faster*
+than the BDD at k=4, then settles at about 1.9x its time from k=8 up; the ratio
+is flat, so nothing is diverging — it is a constant factor, not a scaling
+problem. Against NDD it is 5.4x at k=12.
+
+These numbers are after the two changes described below, which took GCFLOBDD's
+per-conjunction cost from 1,926 ns to 1,605 ns and moved this table 11-25%. The
+control engines did not move, which is how we know the machine did not either.
 
 ### Where the constant factor comes from
 
 The obvious suspect is the JNI boundary, since GCFLOBDD is the only engine here
-that crosses it per operation. It is not the cause. `netbench.JniProbe` times 5M
-already-cached `and` calls, and `tests/opbench.rs` times the same thing with no
-JVM in the loop:
+that crosses it per operation. It is not the cause: the crossing costs 4.2 ns,
+against 2.3 ns for a cached JDD `and`.
 
-| | ns per operation |
-|---|--:|
-| JDD `and`, cache hit | **2.3** |
-| JNI boundary crossing alone | **4.3** |
-| GCFLOBDD `and`, cache hit (through JNI) | **54.1** |
-| GCFLOBDD `and`, cache hit (pure Rust) | **18.6** |
-
-The boundary is under a tenth of it. But neither is the cache-hit path the
-answer, and an earlier version of this document got that wrong: it observed that
-the atomic-predicate stage's runtime divided by the cached-`and` cost came out
-near the loop-trip count, and concluded the constant explained the stage. That
-was a coincidence of two numbers, not a cause.
+Neither is the operation cache, and an earlier version of this document got that
+wrong. It observed that the atomic-predicate stage's runtime divided by the
+cached-`and` cost came out near the loop-trip count, and concluded the constant
+explained the stage. That was a coincidence of two numbers, not a cause.
 
 **The atomic-predicate loop misses the cache almost every time.** It conjoins a
-*different* atom with the predicate on every iteration, so the operation cache
-has nothing to return and the work is the pair-map and reduction underneath.
-`tests/opbench.rs` runs that loop directly:
+*different* atom with the predicate on every iteration, so the cache has nothing
+to return and the work is the pair-map and reduction underneath.
+[`tests/opbench.rs`](tests/opbench.rs) measures both paths, and a counting global
+allocator alongside them:
 
-| | ns per conjunction |
-|---|--:|
-| `and`, cache hit | **18.6** |
-| `and`, on the atomic-predicate loop (misses) | **1,880** |
+Medians of three runs, one library change at a time, same benchmark throughout:
 
-A hundredfold apart. Cutting the cache-hit path 4.6x — which
-[`SharedReturnMap`](src/gcflobdd/return_map.rs) did, by putting the return map
-behind an `Rc` so cloning an operand is a refcount bump rather than a heap
-allocation — moved this whole benchmark by about 6%, inside the noise of the
-table above.
+| | cached `and` | atomic-predicate loop | allocations per conjunction |
+|---|--:|--:|--:|
+| before | 88.4 ns | 1,926 ns | 54.5 |
+| return map behind an `Rc` | **17.0 ns** | 1,917 ns | 49.5 |
+| + small maps inline | 17.0 ns | **1,605 ns** | **21.2** |
 
-What the miss path actually costs is **49.5 heap allocations per conjunction**,
-counted with a counting global allocator in `opbench`. At the ~20-30 ns a
-macOS malloc/free round trip takes, that is most of the 1,880 ns. The allocations
-are small `Vec`s — return maps, reduce maps, connection lists — spread across the
-recursive walk (about 4 `pair_map` recursions per conjunction, so ~12
-allocations each), not concentrated anywhere. The `Rc` change removed three of
-them.
+Two changes, and they buy different things.
 
-**So the next step is not another local fix.** Giving the small maps inline
-storage (a `SmallVec`-style representation: a boolean return map holds at most
-two entries, a boolean reduce map at most four) would take out most of the
-remaining fifty. That is a representation change across the core rather than a
-patch, which is why it is written down here rather than done. `opbench` reports
-the allocation count on every run, so the effect of trying it is one command away.
+**The return map moved behind an `Rc`.** A diagram is cloned three times per
+cache hit — twice to build the probe key, once to take the answer back out — and
+each clone copied its return map, a heap allocation however few entries it held.
+A refcount bump instead took a cached `and` from 88 ns to 17 ns, a 5.2x cut on
+that path — and moved this workload **not at all**, because this workload does
+not hit the cache. It is the right fix for the wrong bottleneck, kept because
+5.2x on a fundamental operation is worth having.
+
+**The small maps went inline** (`smallvec`). Counted by size class, 98% of the
+allocations were under 128 bytes — return maps, reduce matrices, the connections
+leaving a node, none more than a handful of words. Inline storage removed 28 of
+the 49.5 allocations per conjunction and took the loop to 1,605 ns, **1.19x**,
+which is what shows up in the runtime table.
+
+**Not every map, though.** `SmallVec` pays a branch on every access to decide
+inline-versus-spilled: a win where it saves an allocation, a loss where it does
+not. The *transient* maps are built once and dropped, so they go inline. The
+*finished* diagram's return map is read far more often than it is built — every
+cache probe hashes and compares it — and putting that one inline too cost 10 ns
+on every cached `and` and 9% on the loop, against the single allocation it saved.
+It stays a plain `Vec` behind the `Rc`. Both halves are in
+[`return_map.rs`](src/gcflobdd/return_map.rs).
+
+One cost worth knowing: `Vec`'s `Drop` carries `#[may_dangle]` and `SmallVec`'s
+does not, so dropck is now stricter. A grammar must be declared before the
+`Context` that borrows it — which the borrow already implied, but the compiler
+used to let the other order pass.
+
+What remains is 21.2 allocations per conjunction, most of them the `Rc` for each
+genuinely new interned node — the representation working, not overhead to shave.
+Going further means changing how nodes are stored, not how maps are.
 
 ## Diagram size
 
@@ -207,11 +220,11 @@ splits it. JDD keeps its live count private, so it appears only in the RSS colum
 
 | k | NDD (nodes + labels) | GCFLOBDD field-grouped | aligned-balanced-shared | RSS: BDD | NDD | GCFLOBDD-abs |
 |--:|--:|--:|--:|--:|--:|--:|
-| 4 | 35,409 | **8,742** | 19,454 | 197 MB | 205 MB | **67 MB** |
-| 6 | 71,938 | **31,641** | 80,741 | 207 MB | 219 MB | **119 MB** |
-| 8 | **129,922** | 100,537 | 271,182 | **235 MB** | 246 MB | 289 MB |
-| 10 | **255,808** | 273,055 | 863,278 | **459 MB** | 482 MB | 961 MB |
-| 12 | **608,864** | 644,408 | 2,315,926 | 806 MB | **739 MB** | 2,938 MB |
+| 4 | 35,409 | **8,742** | 19,454 | 198 MB | 205 MB | **69 MB** |
+| 6 | 71,938 | **31,641** | 80,741 | 207 MB | 221 MB | **127 MB** |
+| 8 | **129,922** | 100,537 | 271,182 | **234 MB** | 248 MB | 320 MB |
+| 10 | **255,808** | 273,055 | 863,278 | **433 MB** | 487 MB | 974 MB |
+| 12 | **608,864** | 644,408 | 2,315,926 | 805 MB | **754 MB** | 3,132 MB |
 
 ![peak memory](results/macos-m1pro/figures/netverify_memory.svg)
 
@@ -220,8 +233,8 @@ Field-grouped GCFLOBDD lands within 6% of NDD's total node count at k=12
 BDD leaf per field, under a different algebra.
 
 The memory picture inverts with scale. GCFLOBDD starts at a third of the others
-(67 MB against ~200 MB, because its nodes live outside the Java heap and the JVM's
-own floor dominates the Java engines) and ends at 3.6x the BDD's.
+(69 MB against ~200 MB, because its nodes live outside the Java heap and the JVM's
+own floor dominates the Java engines) and ends at 3.9x the BDD's.
 
 The two GCFLOBDD grammars trade off against each other in the way their shapes
 predict. At k=12 `aligned-balanced-shared` holds 3.6x more live nodes than
@@ -240,13 +253,14 @@ comparable between rows, not against a native process.
 Both halves are consistent across every size measured, and neither is a scaling
 effect: the size advantage is roughly constant in k, and so is the runtime deficit.
 
-The runtime gap has a measured cause, and it is neither the JNI (4.3 ns a
-crossing) nor the operation cache (18.6 ns a hit). It is that a cache *miss* —
-which is what this workload is made of — costs 1,880 ns and 49.5 heap
-allocations, in small `Vec`s scattered through the recursive walk. No grammar
-choice changes that: the three grammars differ from each other by 1.6x while all
-three sit around 2x behind the BDD. Inline storage for the small maps is the
-change that would move it.
+The runtime gap has a measured cause, and it is neither the JNI (4.2 ns a
+crossing) nor the operation cache (17.0 ns a hit). It is that a cache *miss* —
+which is what this workload is made of — costs 1,605 ns and 21.2 heap
+allocations. Putting the small maps inline already took that from 1,926 ns and
+54.5 allocations; what is left is mostly the `Rc` per new interned node, so the
+next move would be to how nodes are stored rather than how maps are. No grammar
+choice changes it: the three grammars differ from each other by 1.5x while all
+three sit around 1.9x behind the BDD.
 
 The grammar result stands on its own and is actionable now: **align coarse splits
 to field boundaries, and share one subtree per width**. That is free, and it is
