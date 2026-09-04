@@ -12,9 +12,9 @@ use crate::{
 #[cfg(feature = "fx-hash")]
 use rustc_hash::FxHashMap as HashMap;
 
+use crate::gcflobdd::return_map::{ExitVec, ReturnMapT};
 #[cfg(not(feature = "fx-hash"))]
 use std::collections::HashMap;
-use crate::gcflobdd::return_map::{ExitVec, ReturnMapT};
 
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub enum BddNode {

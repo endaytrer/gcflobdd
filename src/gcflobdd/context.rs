@@ -387,8 +387,8 @@ impl<'grammar> Context<'grammar> {
             self.bdd_node_table.len() * (size_of::<Rch<BddNode>>() + size_of::<BddNode>());
         total_size +=
             self.return_map_table.len() * (size_of::<Rch<ReturnMap>>() + size_of::<ReturnMap>());
-        total_size += self.reduce_matrix_table.len()
-            * (size_of::<Rch<ExitVec>>() + size_of::<ExitVec>());
+        total_size +=
+            self.reduce_matrix_table.len() * (size_of::<Rch<ExitVec>>() + size_of::<ExitVec>());
 
         total_size += self.pair_product_cache.len()
             * (size_of::<(u64, u64)>() + size_of::<ConnectionPair<'grammar>>());

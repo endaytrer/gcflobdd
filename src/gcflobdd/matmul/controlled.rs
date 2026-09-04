@@ -33,6 +33,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::gcflobdd::connection::Connection;
+use crate::gcflobdd::connection::ConnectionLayer;
 use crate::gcflobdd::context::Context;
 use crate::gcflobdd::matmul::identity_node;
 use crate::gcflobdd::matmul::node::split;
@@ -40,7 +41,6 @@ use crate::gcflobdd::node::{GcflobddNode, GcflobddNodeType, InternalNode};
 use crate::grammar::{GrammarNode, GrammarNodeType};
 use crate::utils::hash_cache::Rch;
 use smallvec::smallvec;
-use crate::gcflobdd::connection::ConnectionLayer;
 
 /// What one exit of a block's node means.
 ///

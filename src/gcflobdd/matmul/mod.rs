@@ -80,14 +80,14 @@ mod tests;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::gcflobdd::{GcflobddT, map};
 use crate::gcflobdd::connection::{Connection, ConnectionPair, ConnectionT};
 use crate::gcflobdd::context::Context;
 pub use crate::gcflobdd::matmul::coefficient::Coefficient;
-pub use crate::gcflobdd::value_set::{DedupKey, float_key};
 use crate::gcflobdd::matmul::controlled::{Role, Tag, controlled_node};
 use crate::gcflobdd::matmul::node::{Valued, kron_node, matmul_node, matvec_node, split};
 use crate::gcflobdd::node::{GcflobddNode, GcflobddNodeType, InternalNode};
+pub use crate::gcflobdd::value_set::{DedupKey, float_key};
+use crate::gcflobdd::{GcflobddT, map};
 use crate::grammar::{Grammar, GrammarNode, GrammarNodeType};
 use crate::utils::hash_cache::Rch;
 use crate::utils::{HashSet, new_hash_set};
@@ -736,7 +736,11 @@ fn basis_node<'grammar>(
                 ),
                 Connection::new(
                     b_node,
-                    if b_match == 0 { smallvec![1, 0] } else { smallvec![0, 1] },
+                    if b_match == 0 {
+                        smallvec![1, 0]
+                    } else {
+                        smallvec![0, 1]
+                    },
                     context,
                 ),
             ],

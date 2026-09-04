@@ -26,9 +26,9 @@ use value_set::{DedupKey, ValueSet};
 
 #[cfg(feature = "fx-hash")]
 use rustc_hash::FxHashMap as HashMap;
+use smallvec::smallvec;
 #[cfg(not(feature = "fx-hash"))]
 use std::collections::HashMap;
-use smallvec::smallvec;
 
 #[derive(Clone)]
 pub struct GcflobddT<'grammar, T> {

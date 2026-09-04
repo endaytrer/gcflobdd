@@ -2,6 +2,8 @@ use std::{cell::RefCell, rc::Rc};
 
 use smallvec::smallvec;
 
+use crate::gcflobdd::connection::ConnectionLayer;
+use crate::gcflobdd::return_map::ExitVec;
 use crate::{
     gcflobdd::{
         connection::{Connection, ConnectionT},
@@ -13,8 +15,6 @@ use crate::{
     grammar::{GrammarNode, GrammarNodeType},
     utils::{hash_cache::Rch, new_hash_map},
 };
-use crate::gcflobdd::return_map::ExitVec;
-use crate::gcflobdd::connection::ConnectionLayer;
 
 /// A node paired with one [`MatMulMap`] per exit: the symbolic result of a
 /// (sub-)multiplication, before any value is substituted. The values are behind

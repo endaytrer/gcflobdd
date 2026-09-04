@@ -1,5 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
+use crate::gcflobdd::return_map::ExitVec;
 use crate::{
     gcflobdd::{
         bdd::{
@@ -10,7 +11,6 @@ use crate::{
     },
     utils::hash_cache::Rch,
 };
-use crate::gcflobdd::return_map::ExitVec;
 
 pub(super) mod connection;
 pub(super) mod node;

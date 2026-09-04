@@ -10,6 +10,7 @@ use crate::{
 };
 #[cfg(feature = "fx-hash")]
 use rustc_hash::{FxHashMap as HashMap, FxHasher as DefaultHasher};
+use smallvec::smallvec;
 use std::{
     cell::RefCell,
     hash::{Hash, Hasher},
@@ -18,7 +19,6 @@ use std::{
 };
 #[cfg(not(feature = "fx-hash"))]
 use std::{collections::HashMap, hash::DefaultHasher};
-use smallvec::smallvec;
 
 pub struct GcflobddNode<'grammar> {
     pub(super) num_exits: usize,
@@ -487,10 +487,8 @@ impl<'grammar> GcflobddNode<'grammar> {
                     let new_connections: ConnectionLayer = connection_pair_list
                         .into_iter()
                         .map(|(j, k)| {
-                            let lhs_connection: &Connection<'grammar> =
-                                &lhs_connection_list[j];
-                            let rhs_connection: &Connection<'grammar> =
-                                &rhs_connection_list[k];
+                            let lhs_connection: &Connection<'grammar> = &lhs_connection_list[j];
+                            let rhs_connection: &Connection<'grammar> = &rhs_connection_list[k];
                             let ConnectionPair {
                                 entry_point,
                                 return_map: new_inner_pairs,
@@ -561,13 +559,15 @@ impl<'grammar> GcflobddNode<'grammar> {
         lhs: &Rch<Self>,
         rhs: &Rch<Self>,
         reduce_matrix: &Rch<ExitVec>, // should be a ReduceMap if either lhs / rhs is a dont care
-        num_exits: usize,                // it's only used in reduce of don't care and normal nodes
+        num_exits: usize,             // it's only used in reduce of don't care and normal nodes
         context: &RefCell<Context<'grammar>>,
     ) -> Connection<'grammar> {
         if num_exits == 1 {
             return Connection {
                 entry_point: Self::mk_no_distinction(lhs.grammar, context),
-                return_map: context.borrow_mut().add_return_map(smallvec![reduce_matrix[0]]),
+                return_map: context
+                    .borrow_mut()
+                    .add_return_map(smallvec![reduce_matrix[0]]),
             };
         }
         if let Some(t) = context.borrow().get_pair_map_cache(lhs, rhs, reduce_matrix) {
@@ -579,7 +579,9 @@ impl<'grammar> GcflobddNode<'grammar> {
                 debug_assert_eq!(reduce_matrix.len(), 1);
                 Connection {
                     entry_point: Self::mk_no_distinction(lhs.grammar, context),
-                    return_map: context.borrow_mut().add_return_map(smallvec![reduce_matrix[0]]),
+                    return_map: context
+                        .borrow_mut()
+                        .add_return_map(smallvec![reduce_matrix[0]]),
                 }
             }
             (GcflobddNodeType::DontCare, _) => {
@@ -611,7 +613,9 @@ impl<'grammar> GcflobddNode<'grammar> {
                 if reduce_matrix[0] == reduce_matrix[3] {
                     Connection {
                         entry_point: Self::mk_no_distinction(lhs.grammar, context),
-                        return_map: context.borrow_mut().add_return_map(smallvec![reduce_matrix[0]]),
+                        return_map: context
+                            .borrow_mut()
+                            .add_return_map(smallvec![reduce_matrix[0]]),
                     }
                 } else {
                     Connection {
@@ -640,10 +644,8 @@ impl<'grammar> GcflobddNode<'grammar> {
                     let new_connections: ConnectionLayer = connection_pair_list
                         .into_iter()
                         .map(|(j, k)| {
-                            let lhs_connection: &Connection<'grammar> =
-                                &lhs_connection_list[j];
-                            let rhs_connection: &Connection<'grammar> =
-                                &rhs_connection_list[k];
+                            let lhs_connection: &Connection<'grammar> = &lhs_connection_list[j];
+                            let rhs_connection: &Connection<'grammar> = &rhs_connection_list[k];
                             let ConnectionPair {
                                 entry_point,
                                 return_map: new_inner_pairs,
@@ -684,7 +686,8 @@ impl<'grammar> GcflobddNode<'grammar> {
                 #[cfg(not(feature = "fx-hash"))]
                 let mut new_connection_hashes = HashMap::new();
 
-                let mut new_connections = ConnectionLayer::with_capacity(connection_pair_list.len());
+                let mut new_connections =
+                    ConnectionLayer::with_capacity(connection_pair_list.len());
 
                 let mut exit_lookup = vec![usize::MAX; num_exits];
                 let mut return_map = ReturnMap::with_capacity(num_exits);
@@ -833,10 +836,9 @@ impl<'grammar> GcflobddNode<'grammar> {
                     }
 
                     let new_connection_list = unsafe {
-                        std::mem::transmute::<
-                            Vec<MaybeUninit<ConnectionLayer>>,
-                            Vec<ConnectionLayer>,
-                        >(new_connection_list)
+                        std::mem::transmute::<Vec<MaybeUninit<ConnectionLayer>>, Vec<ConnectionLayer>>(
+                            new_connection_list,
+                        )
                     };
 
                     // Not every value the reduce matrix can produce is
@@ -937,8 +939,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                     #[cfg(not(feature = "fx-hash"))]
                     let mut new_connection_hashes = HashMap::new();
 
-                    let mut new_connections =
-                        ConnectionLayer::with_capacity(connection_list.len());
+                    let mut new_connections = ConnectionLayer::with_capacity(connection_list.len());
 
                     let new_reduce_map = connection_list
                         .iter()
@@ -992,10 +993,9 @@ impl<'grammar> GcflobddNode<'grammar> {
                 }
                 // safe because every entry has been initialized;
                 let new_connection_list = unsafe {
-                    std::mem::transmute::<
-                        Vec<MaybeUninit<ConnectionLayer>>,
-                        Vec<ConnectionLayer>,
-                    >(new_connection_list)
+                    std::mem::transmute::<Vec<MaybeUninit<ConnectionLayer>>, Vec<ConnectionLayer>>(
+                        new_connection_list,
+                    )
                 };
                 context.borrow_mut().add_gcflobdd_node(Self {
                     num_exits,
