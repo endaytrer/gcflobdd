@@ -7,9 +7,10 @@ use smallvec::SmallVec;
 /// The maps this crate builds in bulk are tiny -- a boolean diagram's return map
 /// has at most two entries, a boolean operation's reduce matrix at most four --
 /// and building them dominated the cost of every operation that missed the
-/// operation cache. The atomic-predicate workload in
-/// [`NETWORK.md`](../../NETWORK.md) allocated 49.5 times per conjunction, almost
-/// all of it in the 8-to-63-byte size classes: maps of one to seven words.
+/// operation cache. Under an allocation profile of the atomic-predicate
+/// workload, a conjunction allocated 49.5 times, almost all of it in the
+/// 8-to-63-byte size classes: maps of one to seven words. The profiling harness
+/// that measured this is gone; the budget it justified is what remains.
 pub(super) const RETURN_MAP_INLINE: usize = 4;
 
 /// A return map built during an operation: inline until it outgrows the budget.

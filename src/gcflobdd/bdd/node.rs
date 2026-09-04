@@ -15,7 +15,6 @@ use rustc_hash::FxHashMap as HashMap;
 #[cfg(not(feature = "fx-hash"))]
 use std::collections::HashMap;
 use crate::gcflobdd::return_map::{ExitVec, ReturnMapT};
-use crate::utils::opcount::{C, bump};
 
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub enum BddNode {
@@ -52,25 +51,6 @@ impl BddNode {
                 var_id: i,
                 zero_branch,
                 one_branch,
-            }))
-    }
-
-    pub fn mk_hadamard_2(context: &RefCell<Context<'_>>) -> Rch<Self> {
-        let zero_branch = Self::mk_terminal(0, context);
-        let one_branch = Self::mk_terminal(1, context);
-        let node_1 = context
-            .borrow_mut()
-            .add_bdd_node(Self::Internal(BddInternalNode {
-                var_id: 1,
-                zero_branch: zero_branch.clone(),
-                one_branch,
-            }));
-        context
-            .borrow_mut()
-            .add_bdd_node(Self::Internal(BddInternalNode {
-                var_id: 0,
-                zero_branch,
-                one_branch: node_1,
             }))
     }
 
@@ -186,9 +166,7 @@ impl BddNode {
         rhs_num_exits: usize,
         context: &RefCell<Context<'_>>,
     ) -> BddConnectionPair {
-        bump(C::BddPairProductCall);
         if let Some(t) = context.borrow().get_bdd_pair_product_cache(lhs, rhs) {
-            bump(C::BddPairProductHit);
             return t;
         }
 
@@ -298,9 +276,7 @@ impl BddNode {
             return this.clone();
         }
 
-        bump(C::BddReduceCall);
         if let Some(t) = context.borrow().get_bdd_reduction_cache(this, reduce_map) {
-            bump(C::BddReduceHit);
             return t;
         }
         let ans = match this.as_ref().as_ref() {
@@ -340,12 +316,10 @@ impl BddNode {
         rhs_num_exits: usize,
         context: &RefCell<Context<'_>>,
     ) -> BddConnection {
-        bump(C::BddPairMapCall);
         if let Some(t) = context
             .borrow()
             .get_bdd_pair_map_cache(lhs, rhs, reduce_matrix)
         {
-            bump(C::BddPairMapHit);
             return t;
         }
         let mut leaf_map = HashMap::default();

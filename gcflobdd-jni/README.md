@@ -17,19 +17,24 @@ features = ["fx-hash"]`, so this build has **no** `rug`/GMP (native C) dependenc
 Load from Java with `-Djava.library.path=<dir containing libgcflobdd_jni.so>` and
 `System.loadLibrary("gcflobdd_jni")`.
 
-## Java contract (Workstream 3)
+## Java contract
 
 The matching Java class is
-`application.wan.bdd.verifier.common.GcflobddEngine`. All native methods are
-`static` and take the opaque engine pointer (`long`) as their first argument:
+[`application.wan.bdd.verifier.common.GcflobddEngine`](../bench/netverify/src/application/wan/bdd/verifier/common/GcflobddEngine.java),
+the Java side of the `netbench` network-verification harness. All native methods
+are `static` and take the opaque engine pointer (`long`) as their first argument:
 
 ```java
 package application.wan.bdd.verifier.common;
 
-public final class GcflobddEngine {   // implements PacketBddEngine (WS3)
+public final class GcflobddEngine implements AutoCloseable {
     static { System.loadLibrary("gcflobdd_jni"); }
 
-    // config: 0 = FIELD_GROUPED (Config 1), 1 = ALIGNED_BALANCED (Config 2)
+    // Grammar selector; see "Grammar configurations" below.
+    public static final int CONFIG_FIELD_GROUPED           = 0;
+    public static final int CONFIG_ALIGNED_BALANCED        = 1;
+    public static final int CONFIG_ALIGNED_BALANCED_SHARED = 2;
+
     private static native long   nativeNew(int config);
     private static native void   nativeDestroy(long ptr);
 
@@ -37,6 +42,8 @@ public final class GcflobddEngine {   // implements PacketBddEngine (WS3)
     private static native int    nativeAnd(long ptr, int a, int b);
     private static native int    nativeOr(long ptr, int a, int b);
     private static native int    nativeNot(long ptr, int a);
+    private static native int    nativeDiff(long ptr, int a, int b);   // a AND NOT b
+    private static native int    nativeXor(long ptr, int a, int b);
 
     private static native int    nativeRef(long ptr, int a);      // returns a
     private static native int    nativeDeref(long ptr, int a);    // returns a
@@ -50,9 +57,20 @@ public final class GcflobddEngine {   // implements PacketBddEngine (WS3)
     private static native boolean nativeIsValid(long ptr, int a);
     private static native int    nativeNumVars(long ptr);
 
+    // Per-handle diagram size, for the size tables in BENCHMARKS.md.
+    private static native int    nativeDiagramNodes(long ptr, int a);
+    private static native int    nativeDiagramEdges(long ptr, int a);
+    private static native int    nativeConvTotal(long ptr, int a);
+
     private static native int    nativeExists(long ptr, int bdd, int cube);
 }
 ```
+
+`netbench` drives only a subset of this: `and`, `or`, `not`, `diff`, `ref`,
+`deref`, `gc`, `satCount`, `nodeCount`, `memoryUsage`, `numVars`,
+`diagramNodes`, `diagramEdges` and `convTotal`. The rest -- `xor`, `oneSat`,
+`isValid`, `getRef`, `exists` -- round out the `jdd.bdd.BDD` shape and are
+covered by the unit tests in `src/engine.rs`, but no current caller uses them.
 
 ## Semantics (matching jdd)
 
@@ -83,16 +101,26 @@ public final class GcflobddEngine {   // implements PacketBddEngine (WS3)
 
 ## Grammar configurations
 
-Both keep the same 104-leaf order — srcip(32)·dstip(32)·srcport(16)·dstport(16)
-·proto(8) — so `createVar()`'s sequential index matches the field layout (and
-matches jdd/NDD) for either configuration.
+All three keep the same 104-leaf order — srcip(32)·dstip(32)·srcport(16)
+·dstport(16)·proto(8) — so `createVar()`'s sequential index matches the field
+layout (and matches jdd/NDD) whichever configuration is selected.
 
-- **Config 1 — `FieldGrouped` (NDD-like):** one ordinary-BDD leaf per field:
+- **Config 0 — `FieldGrouped` (NDD-like):** one ordinary-BDD leaf per field:
   `S -> BDD(32) BDD(32) BDD(16) BDD(16) BDD(8)`.
-- **Config 2 — `AlignedBalanced`:** a balanced binary tree recursed to single
+- **Config 1 — `AlignedBalanced`:** a balanced binary tree recursed to single
   bits, with coarse splits forced onto field boundaries
   (`S -> A B; A -> SI32 DI32; B -> SP16 C; C -> DP16 PR8`) and each field a
-  perfect binary tree of single bits.
+  perfect binary tree of single bits. Every field carries its own symbols, so
+  equal-width subtrees are distinct grammar nodes.
+- **Config 2 — `AlignedBalancedShared`:** the same tree shape and the same field
+  boundaries, but each subtree width is named once (`W32`, `W16`, `W8`, `W4`,
+  `W2`) and shared by every field of that width. GCFLOBDD node identity is keyed
+  on the grammar node's address, so this is what lets a src_ip subdiagram share
+  nodes with a dst_port one. [`BENCHMARKS.md`](../BENCHMARKS.md) measures the
+  difference: 32-36% fewer nodes in the largest diagram than Config 1.
+
+The selector values above are the integers `nativeNew` takes, and match the
+`CONFIG_*` constants on the Java class.
 
 ## Threading
 

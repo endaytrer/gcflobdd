@@ -263,9 +263,9 @@ pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_n
 /// Existential quantification (`exists(bdd, cube)`), used only by NAT rewriting.
 /// Not yet implemented for GCFLOBDD (needs a canonicalizing reduction); the
 /// fattree benchmark does not exercise it. Raises a Java exception if called.
-/// Nodes reachable from this diagram's root, in this crate's own convention.
-/// Unlike `nativeNodeCount` (which reports the shared `Context`) this is
-/// per-handle, which is what `results/` reports as diagram size.
+/// Nodes reachable from this diagram's root. Unlike `nativeNodeCount` (which
+/// reports the shared `Context`) this is per-handle, which is what `results/`
+/// reports as diagram size. Node counts are convention-free.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_nativeDiagramNodes(
     mut env: JNIEnv,
@@ -278,7 +278,8 @@ pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_n
     })
 }
 
-/// Connections leaving this diagram's nodes, one edge per connection.
+/// Edges leaving this diagram's nodes, in the reference C++ CFLOBDD's counting
+/// convention: two per connection plus every distinct return map's entries.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_nativeDiagramEdges(
     mut env: JNIEnv,
@@ -291,9 +292,10 @@ pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_n
     })
 }
 
-/// This diagram's size under the reference C++ CFLOBDD's counting convention:
-/// two edges per connection plus every distinct return map's entries. See
-/// BENCHMARKS.md, "Reading the size column".
+/// This diagram's nodes plus edges -- the single number the size tables quote,
+/// in the reference C++ CFLOBDD's counting convention. Equal to
+/// `nativeDiagramNodes + nativeDiagramEdges`; kept as its own entry point
+/// because that sum is what `netbench` reports as `max_conv`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_nativeConvTotal(
     mut env: JNIEnv,
@@ -302,7 +304,7 @@ pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_n
     a: jint,
 ) -> jint {
     guard(&mut env, 0, || {
-        let (n, e) = unsafe { engine_mut(ptr) }.conv_size(a);
+        let (n, e) = unsafe { engine_mut(ptr) }.diagram_size(a);
         (n + e) as jint
     })
 }

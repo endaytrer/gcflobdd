@@ -43,7 +43,7 @@ fi
 
 mkdir -p "$(dirname "$OUT")"
 if [ "$APPEND" != 1 ] || [ ! -s "$OUT" ]; then
-  echo "impl,algo,p,qubits,seed,wall_s,peak_rss_kb,duration_ms,duration_us,nodes,edges,total,conv_total,correct,verified,status" > "$OUT"
+  echo "impl,algo,p,qubits,seed,wall_s,peak_rss_kb,duration_ms,duration_us,nodes,edges,total,correct,verified,status" > "$OUT"
 fi
 
 # Skip a side entirely when ONLY selects the other one.
@@ -148,7 +148,7 @@ run() {
     verified=$(grep -m1 -o "matches theory: [01]" "$tmp_out" | awk '{print $3}')
   fi
 
-  local dur= us= nodes= edges= total= conv=
+  local dur= us= nodes= edges= total=
   if grep -q "^Duration: " "$tmp_out"; then
     local line; line=$(grep -m1 "^Duration: " "$tmp_out")
     dur=$(  sed -n 's/.*Duration: \([0-9]*\).*/\1/p'   <<<"$line")
@@ -158,15 +158,9 @@ run() {
     total=$(sed -n 's/.*totalCount: \([0-9]*\).*/\1/p' <<<"$line")
     # only this crate's binary reports microseconds
     us=$(   sed -n 's/.*durationUs: \([0-9]*\).*/\1/p'  <<<"$line")
-    # ...and only it reports its diagram under the reference's counting
-    # convention.  The reference's own `totalCount` is already in that
-    # convention, so `conv_total` is empty for its rows and `total` is the
-    # figure to use there; comparing this crate's `total` against the
-    # reference's would be comparing two different counters.
-    conv=$(sed -n 's/.*cflobddConvTotal: \([0-9]*\).*/\1/p' <<<"$line")
   fi
 
-  echo "$impl,$label,$p,$qubits,${seed:-na},$wall,$rss,$dur,$us,$nodes,$edges,$total,$conv,$correct,$verified,$status" >> "$OUT"
+  echo "$impl,$label,$p,$qubits,${seed:-na},$wall,$rss,$dur,$us,$nodes,$edges,$total,$correct,$verified,$status" >> "$OUT"
   printf '%-5s %-7s p=%-2s q=%-4s seed=%-3s %-8s correct=%-3s verified=%-3s %sus (wall %ss)\n' \
     "$impl" "$label" "$p" "$qubits" "${seed:-na}" "$status" "$correct" "$verified" "${us:-${dur:-?}000}" "${wall:-?}"
 
@@ -177,29 +171,22 @@ run() {
 want() { [ $# -eq 0 ] && return 0; local a=$1; shift; for w in "$@"; do [ "$w" = "$a" ] && return 0; done; return 1; }
 ALGOS=("$@")
 
-# GHZ runs two ladders on this crate's side, because the reference does not run
-# the textbook circuit:
-#
-#   ghz      testGHZAlgoMatrix -- the reference's own construction, a 2n-qubit
-#                                 register held as a matrix.  This is the row
-#                                 that is comparable with `cpp,ghz`.
-#   ghz-vec  testGHZAlgo       -- the textbook circuit on an n-variable state
-#                                 vector.  A smaller object, and no reference
-#                                 number exists for it; kept because it is what
-#                                 this crate would actually do.
+# GHZ takes no seed, so it gets its own loop rather than joining the seeded one
+# below.  The two sides do not build the same object: `ghz-vec` here is the
+# textbook circuit on an n-qubit state vector, while the reference's
+# `testGHZAlgo` is a 2n-qubit operator held as a matrix, which is strictly
+# larger.  They are the two halves of one row, and BENCHMARKS.md says so before
+# comparing them.
 if want ghz "${ALGOS[@]}"; then
   for p in $(seq "$PMIN" "$PMAX"); do
-    rust_ok=1; vec_ok=1; cpp_ok=1
-    [ ${RUST_DONE_ghz:-0} -eq 1 ] || run_rust ghz     testGHZAlgoMatrix "$p" || rust_ok=0
-    [ ${VEC_DONE_ghz:-0}  -eq 1 ] || run_rust ghz-vec testGHZAlgo       "$p" || vec_ok=0
-    [ ${CPP_DONE_ghz:-0}  -eq 1 ] || run_cpp  ghz     testGHZAlgo       "$p" || cpp_ok=0
-    [ $rust_ok -eq 1 ] || RUST_DONE_ghz=1
-    [ $vec_ok  -eq 1 ] || VEC_DONE_ghz=1
-    [ $cpp_ok  -eq 1 ] || CPP_DONE_ghz=1
+    vec_ok=1; cpp_ok=1
+    [ ${VEC_DONE_ghz:-0} -eq 1 ] || run_rust ghz-vec testGHZAlgo "$p" || vec_ok=0
+    [ ${CPP_DONE_ghz:-0} -eq 1 ] || run_cpp  ghz     testGHZAlgo "$p" || cpp_ok=0
+    [ $vec_ok -eq 1 ] || VEC_DONE_ghz=1
+    [ $cpp_ok -eq 1 ] || CPP_DONE_ghz=1
     [ "$ONLY" = rust ] && CPP_DONE_ghz=1
-    [ "$ONLY" = cpp  ] && { RUST_DONE_ghz=1; VEC_DONE_ghz=1; }
-    [ ${RUST_DONE_ghz:-0} -eq 1 ] && [ ${VEC_DONE_ghz:-0} -eq 1 ] \
-      && [ ${CPP_DONE_ghz:-0} -eq 1 ] && break
+    [ "$ONLY" = cpp  ] && VEC_DONE_ghz=1
+    [ ${VEC_DONE_ghz:-0} -eq 1 ] && [ ${CPP_DONE_ghz:-0} -eq 1 ] && break
   done
 fi
 
@@ -225,7 +212,6 @@ done
 #
 # GROVER_MODE picks this crate's variant, since the two implementations do not
 # agree on how to reach M^k:
-#   testGroversAlgo      honest iteration, f64
 #   testGroversAlgoFast  operator exponentiation, f64        (the reference's shape)
 #   testGroversAlgoBig   operator exponentiation, wide float (the default here)
 #
@@ -234,7 +220,6 @@ done
 if want grover "${ALGOS[@]}"; then
   GROVER_MODE=${GROVER_MODE:-testGroversAlgoBig}
   case $GROVER_MODE in
-    testGroversAlgo)     rust_label=grover-iterate ;;
     testGroversAlgoFast) rust_label=grover-fast ;;
     *)                   rust_label=grover-big ;;
   esac

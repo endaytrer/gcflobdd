@@ -17,6 +17,9 @@ BIN=${BIN:-}
 OUT=${OUT:-$here/results/uneven.csv}
 TIMEOUT=${TIMEOUT:-300}
 SEEDS=${SEEDS:-"1 2 3"}
+# GHZ takes no seed, so it repeats the same run instead.  Same sample count as
+# the seeded ladders, so every median in the table rests on the same n.
+REPS=${REPS:-3}
 
 if [ -z "$BIN" ]; then
   cargo build --release --test quantum --features bigint --manifest-path "$here/Cargo.toml" >/dev/null 2>&1
@@ -25,7 +28,7 @@ fi
 [ -x "$BIN" ] || { echo "error: quantum benchmark not built" >&2; exit 1; }
 
 mkdir -p "$(dirname "$OUT")"
-echo "algo,qubits,seed,wall_s,peak_rss_kb,duration_us,nodes,edges,total,conv_total,correct,verified,status" > "$OUT"
+echo "algo,qubits,seed,wall_s,peak_rss_kb,duration_us,nodes,edges,total,correct,verified,status" > "$OUT"
 
 tmp_out=$(mktemp); tmp_time=$(mktemp)
 trap 'rm -f "$tmp_out" "$tmp_time"' EXIT
@@ -100,17 +103,16 @@ run() {
     verified=$(grep -m1 -o "matches theory: [01]" "$tmp_out" | awk '{print $3}')
   fi
 
-  local us= nodes= edges= total= conv=
+  local us= nodes= edges= total=
   if grep -q "^Duration: " "$tmp_out"; then
     local line; line=$(grep -m1 "^Duration: " "$tmp_out")
     nodes=$(sed -n 's/.*nodeCount: \([0-9]*\).*/\1/p'  <<<"$line")
     edges=$(sed -n 's/.*edgeCount: \([0-9]*\).*/\1/p'  <<<"$line")
     total=$(sed -n 's/.*totalCount: \([0-9]*\).*/\1/p' <<<"$line")
     us=$(   sed -n 's/.*durationUs: \([0-9]*\).*/\1/p' <<<"$line")
-    conv=$( sed -n 's/.*cflobddConvTotal: \([0-9]*\).*/\1/p' <<<"$line")
   fi
 
-  echo "$label,$n,${seed:-na},$wall,$rss,$us,$nodes,$edges,$total,$conv,$correct,$verified,$status" >> "$OUT"
+  echo "$label,$n,${seed:-na},$wall,$rss,$us,$nodes,$edges,$total,$correct,$verified,$status" >> "$OUT"
   printf '%-9s q=%-5s seed=%-3s %-8s correct=%-3s verified=%-3s %sus (wall %ss)\n' \
     "$label" "$n" "${seed:-na}" "$status" "$correct" "$verified" "${us:-?}" "${wall:-?}"
   [ "$status" = ok ]
@@ -137,13 +139,12 @@ ladder() {  # ladder <label> <test> <seeded 0|1> <counts...>
     if [ "$seeded" = 1 ]; then
       for s in $SEEDS; do run "$label" "$test" "$n" "$s" "$check" || ok=0; done
     else
-      run "$label" "$test" "$n" || ok=0
+      for _ in $(seq "$REPS"); do run "$label" "$test" "$n" || ok=0; done
     fi
     [ $ok -eq 1 ] || { echo "  $label stopped at $n" >&2; return; }
   done
 }
 
-want ghz     && ladder ghz     testGHZAlgoMatrix 0 $EVEN $ODD
 want ghz-vec && ladder ghz-vec testGHZAlgo       0 $EVEN $ODD
 want bv      && ladder bv      testBVAlgo        1 $EVEN $ODD
 want dj      && ladder dj      testDJAlgo        1 $EVEN $ODD

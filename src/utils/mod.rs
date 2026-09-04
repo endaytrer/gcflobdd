@@ -1,5 +1,4 @@
 pub(crate) mod hash_cache;
-pub mod opcount;
 
 #[cfg(feature = "fx-hash")]
 pub(crate) use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};

@@ -4,7 +4,7 @@ NDD ([XJTU-NetVerify/NDD](https://github.com/XJTU-NetVerify/NDD), NSDI '25) argu
 its case on network verification. This harness meets it there: one driver, one
 workload, five engines, byte-identical inputs.
 
-Results and the write-up are in [`NETWORK.md`](../../NETWORK.md).
+Results and the write-up are in [`BENCHMARKS.md`](../../BENCHMARKS.md).
 
 ## Why the workload is ours
 

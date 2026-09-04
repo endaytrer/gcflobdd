@@ -440,18 +440,13 @@ impl Engine {
         self.context.borrow().node_count() as i32
     }
 
-    /// Nodes reachable from *this diagram's* root, and the connections leaving
-    /// them -- this crate's own counting convention (one edge per connection, no
-    /// return-map entries). Unlike [`Self::node_count`] this is per-handle.
+    /// Nodes reachable from *this diagram's* root, and the edges leaving them,
+    /// in the reference C++ CFLOBDD's counting convention -- two edges per
+    /// connection plus the entries of every distinct return map. See
+    /// BENCHMARKS.md, "Reading the size column". Unlike [`Self::node_count`]
+    /// this is per-handle.
     pub fn diagram_size(&self, h: i32) -> (usize, usize) {
         self.resolve(h).count_nodes_and_edges()
-    }
-
-    /// The same diagram measured the way the reference C++ CFLOBDD counts:
-    /// two edges per connection plus the entries of every distinct return map.
-    /// See BENCHMARKS.md, "Reading the size column".
-    pub fn conv_size(&self, h: i32) -> (usize, usize) {
-        self.resolve(h).count_cflobdd_convention()
     }
 
     /// Rough heap footprint of the shared `Context`, in bytes.
@@ -547,10 +542,9 @@ mod tests {
         let (xn, xe) = e.diagram_size(x);
         assert!(xn > tn || xe > te, "a projection is bigger than a constant");
 
-        // The reference convention counts more of the same diagram, never less.
-        let (cn, ce) = e.conv_size(x);
-        assert_eq!(cn, xn, "node counts are convention-free");
-        assert!(ce >= xe, "the reference counts two edges per connection");
+        // Two edges per connection plus the return maps, so a diagram with any
+        // connection at all reports more edges than nodes.
+        assert!(xe >= xn, "the reference convention counts two edges per connection");
 
         // ... and the global count is a different, larger number.
         assert!(e.node_count() as usize >= xn);
