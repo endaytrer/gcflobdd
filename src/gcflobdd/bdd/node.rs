@@ -15,6 +15,7 @@ use rustc_hash::FxHashMap as HashMap;
 #[cfg(not(feature = "fx-hash"))]
 use std::collections::HashMap;
 use crate::gcflobdd::return_map::{ExitVec, ReturnMapT};
+use crate::utils::opcount::{C, bump};
 
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub enum BddNode {
@@ -185,7 +186,9 @@ impl BddNode {
         rhs_num_exits: usize,
         context: &RefCell<Context<'_>>,
     ) -> BddConnectionPair {
+        bump(C::BddPairProductCall);
         if let Some(t) = context.borrow().get_bdd_pair_product_cache(lhs, rhs) {
+            bump(C::BddPairProductHit);
             return t;
         }
 
@@ -295,7 +298,9 @@ impl BddNode {
             return this.clone();
         }
 
+        bump(C::BddReduceCall);
         if let Some(t) = context.borrow().get_bdd_reduction_cache(this, reduce_map) {
+            bump(C::BddReduceHit);
             return t;
         }
         let ans = match this.as_ref().as_ref() {
@@ -335,10 +340,12 @@ impl BddNode {
         rhs_num_exits: usize,
         context: &RefCell<Context<'_>>,
     ) -> BddConnection {
+        bump(C::BddPairMapCall);
         if let Some(t) = context
             .borrow()
             .get_bdd_pair_map_cache(lhs, rhs, reduce_matrix)
         {
+            bump(C::BddPairMapHit);
             return t;
         }
         let mut leaf_map = HashMap::default();

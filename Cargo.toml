@@ -17,6 +17,9 @@ smallvec = "1.15.2"
 default = ["fx-hash", "complex"]
 sync = ["dep:parking_lot"]
 separate_reduce_map = []
+# Recursive-call counters for profiling (src/utils/opcount.rs). Adds an atomic
+# increment to the hottest path in the crate -- analysis only, never timing.
+opcount = []
 fx-hash = ["dep:rustc-hash"]
 complex = ["dep:rug"]
 # Arbitrary-precision path coefficients: no qubit ceiling, at a cost measured
@@ -41,4 +44,12 @@ harness = false
 
 [[test]]
 name = "opbench"
+harness = false
+
+[[test]]
+name = "workprofile"
+harness = false
+
+[[test]]
+name = "scaling"
 harness = false

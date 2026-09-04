@@ -192,6 +192,11 @@ impl<'grammar> Gcflobdd<'grammar> {
         self.find_one_path_to(&true)
     }
 
+    /// The grammar this diagram is over.
+    pub fn grammar_ref(&self) -> &'grammar Grammar {
+        self.grammar
+    }
+
     /// Returns `log2` of the number of satisfying assignments over the whole
     /// `grammar.num_vars`-bit variable space (i.e. `log2(satcount)`), rather
     /// than the raw count, so the result stays finite for wide headers where

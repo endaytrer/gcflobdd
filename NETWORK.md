@@ -100,26 +100,29 @@ predicates, all-pairs reachability.
 
 | k | BDD (JDD) | NDD | GCFLOBDD field-grouped | aligned-balanced | aligned-balanced-shared |
 |--:|--:|--:|--:|--:|--:|
-| 4 | 43 ms | 50 | 72 | 42 | **41 ms** |
-| 6 | 130 ms | **105 ms** | 322 | 192 | 180 |
-| 8 | 381 ms | **214 ms** | 1,203 | 646 | 715 |
-| 10 | 1,464 ms | **606 ms** | 4,390 | 2,550 | 2,802 |
-| 12 | 5,121 ms | **1,713 ms** | 13,108 | 8,853 | 9,218 |
+| 4 | **43 ms** | 50 | 76 | 48 | 49 |
+| 6 | 145 ms | **129 ms** | 380 | 214 | 211 |
+| 8 | 456 ms | **282 ms** | 1,265 | 661 | 652 |
+| 10 | 1,403 ms | **644 ms** | 4,642 | 2,786 | 2,813 |
+| 12 | 5,213 ms | **1,852 ms** | 14,876 | 9,534 | 9,676 |
 
 ![runtime](results/macos-m1pro/figures/netverify_runtime.svg)
 
 **NDD's claim reproduces.** It starts level with the BDD and pulls away as the
-problem grows — 1.8x at k=8, 2.4x at k=10, **3.0x at k=12** — which is the shape
+problem grows — 1.6x at k=8, 2.2x at k=10, **2.8x at k=12** — which is the shape
 its paper reports, on an independent harness.
 
-**GCFLOBDD is slower here, by a steady factor.** The best grammar is *faster*
-than the BDD at k=4, then settles at about 1.9x its time from k=8 up; the ratio
-is flat, so nothing is diverging — it is a constant factor, not a scaling
-problem. Against NDD it is 5.4x at k=12.
+**GCFLOBDD is slower here, by a steady factor.** The best grammar is level with
+the BDD at k=4 and sits between 1.4x and 2.0x its time from k=6 up; the ratio has
+no trend in k, so nothing is diverging — it is a constant factor, not a scaling
+problem. Against NDD it is 5.2x at k=12.
 
-These numbers are after the two changes described below, which took GCFLOBDD's
-per-conjunction cost from 1,926 ns to 1,605 ns and moved this table 11-25%. The
-control engines did not move, which is how we know the machine did not either.
+These numbers are after the two changes described below, which — measured back to
+back — took GCFLOBDD's per-conjunction cost from 1,926 ns to 1,605 ns and moved
+this table 11-25% while the control engines held still, which is how we knew the
+machine had not moved either. The table above is a later re-run of the whole
+ladder, on which every engine, controls included, is a few percent slower than
+that sitting; the per-operation costs below re-measure within noise.
 
 ### Where the constant factor comes from
 
@@ -207,10 +210,13 @@ aligned-balanced grammars recurse to single bits and so are the closer compariso
 and `W8` across the protocol and every byte of every other field takes the largest
 diagram from 172 nodes to 115 — **a 32-36% reduction at every size**, for a grammar
 of the same shape and the same field boundaries. It costs nothing at runtime (the
-two coincide within 1%), so it is free.
+two coincide within 2.1%), so it is free.
 
-NDD cannot appear in this table: it has no per-diagram node walk, only a global
-count.
+NDD appears in the anatomy table below rather than this one. It ships no
+per-diagram walk, but its node and edge accessors are public, so
+[`NddBackend`](bench/netverify/src/netbench/backend/NddBackend.java) writes one --
+and an NDD diagram has two sizes, its own nodes and the label BDDs under them,
+which do not add up to a figure comparable with this column.
 
 ## Engine-wide size and memory
 
@@ -220,11 +226,11 @@ splits it. JDD keeps its live count private, so it appears only in the RSS colum
 
 | k | NDD (nodes + labels) | GCFLOBDD field-grouped | aligned-balanced-shared | RSS: BDD | NDD | GCFLOBDD-abs |
 |--:|--:|--:|--:|--:|--:|--:|
-| 4 | 35,409 | **8,742** | 19,454 | 198 MB | 205 MB | **69 MB** |
-| 6 | 71,938 | **31,641** | 80,741 | 207 MB | 221 MB | **127 MB** |
-| 8 | **129,922** | 100,537 | 271,182 | **234 MB** | 248 MB | 320 MB |
-| 10 | **255,808** | 273,055 | 863,278 | **433 MB** | 487 MB | 974 MB |
-| 12 | **608,864** | 644,408 | 2,315,926 | 805 MB | **754 MB** | 3,132 MB |
+| 4 | 35,409 | **8,742** | 19,454 | 196 MB | 205 MB | **69 MB** |
+| 6 | 71,938 | **31,641** | 80,741 | 206 MB | 220 MB | **131 MB** |
+| 8 | 129,922 | **100,537** | 271,182 | **233 MB** | 243 MB | 319 MB |
+| 10 | **255,808** | 273,055 | 863,278 | **457 MB** | 482 MB | 972 MB |
+| 12 | **608,864** | 644,408 | 2,315,926 | 835 MB | **764 MB** | 3,132 MB |
 
 ![peak memory](results/macos-m1pro/figures/netverify_memory.svg)
 
@@ -234,7 +240,7 @@ BDD leaf per field, under a different algebra.
 
 The memory picture inverts with scale. GCFLOBDD starts at a third of the others
 (69 MB against ~200 MB, because its nodes live outside the Java heap and the JVM's
-own floor dominates the Java engines) and ends at 3.9x the BDD's.
+own floor dominates the Java engines) and ends at 3.7x the BDD's.
 
 The two GCFLOBDD grammars trade off against each other in the way their shapes
 predict. At k=12 `aligned-balanced-shared` holds 3.6x more live nodes than
@@ -246,6 +252,213 @@ is the one to compare.
 
 Note that column measures the whole process, so every row carries a JVM — it is
 comparable between rows, not against a native process.
+
+## How the work scales with the network
+
+The operation count is engine-independent -- every backend executes the identical
+sequence -- so one run of `netbench.Anatomy` per dataset fixes it for all five.
+Nine rungs, k=4 to k=20, medians of three seeds through k=16 and one seed beyond:
+
+| k | devices | FIB rules | ACL rules | predicates | atoms | build ops | AP ops | total ops |
+|--:|--:|--:|--:|--:|--:|--:|--:|--:|
+| 4 | 20 | 180 | 72 | 60 | 506 | 8,552 | 2,891 | 11,443 |
+| 6 | 45 | 420 | 162 | 168 | 3,358 | 19,182 | 39,921 | 59,103 |
+| 8 | 80 | 840 | 288 | 341 | 7,821 | 35,845 | 152,822 | 188,667 |
+| 10 | 125 | 1,500 | 450 | 574 | 26,095 | 58,998 | 692,871 | 751,869 |
+| 12 | 180 | 2,460 | 648 | 892 | 75,408 | 90,080 | 2,437,671 | 2,527,751 |
+| 14 | 245 | 3,780 | 882 | 1,279 | 184,882 | 129,681 | 7,106,599 | 7,236,280 |
+| 16 | 320 | 5,520 | 1,152 | 1,768 | 463,680 | 178,965 | 20,996,316 | 21,175,281 |
+| 18 | 405 | 7,740 | 1,458 | 2,370 | 1,082,892 | 238,687 | 59,298,537 | 59,537,224 |
+| 20 | 500 | 10,500 | 1,800 | 3,080 | 2,007,704 | 309,641 | 140,155,417 | 140,465,058 |
+
+The inputs are exact, not fitted. A k-ary fat tree has k pods of k/2 edge and k/2
+aggregation switches plus (k/2)^2 core, so **D = 5k^2/4 devices**; the generator
+writes k routes per edge and aggregation switch, k per core, plus 25k injected,
+for **5k^3/4 + 25k FIB rules = Theta(D^1.5)**; and one ACL per edge switch, 9
+rules each, for **9k^2/2 = 3.6D ACL rules = Theta(D)**. Every row matches those
+closed forms exactly.
+
+What is measured, as a log-log fit over D = 20..500:
+
+| quantity | fit | R^2 |
+|---|---|--:|
+| distinct predicates | **Theta(D^1.21)** | 0.9998 |
+| build operations | **Theta(D^1.12)** | 0.9986 |
+| atomic predicates | Theta(D^2.6) | 0.9858 |
+| **AP operations** | **Theta(D^3.3)** | 0.9933 |
+| total operations | Theta(D^3.0) | 0.9776 |
+
+Predicates grow more slowly than ports (Theta(D^1.5)) because fat-tree symmetry
+makes many ports share a forwarding predicate; that exponent is the stablest thing
+in the table, holding between 1.17 and 1.27 on every single rung. Building them
+costs 30 to 48 operations per FIB rule -- the prefix encoding plus the
+longest-prefix-match `diff`/`or`, the ratio falling as aggregate routes shorten
+the average prefix -- so the build stage is linear in its input and stops
+mattering above k=6.
+
+### The AP exponent is not settled, and that is the interesting part
+
+`Theta(D^3.3)` describes the measured range; it is not an asymptote. The
+rung-to-rung slope climbs:
+
+| k | 4->6 | 6->8 | 8->10 | 10->12 | 12->14 | 14->16 | 16->18 | 18->20 |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| AP ops | D^3.24 | D^2.33 | D^3.39 | D^3.45 | D^3.47 | D^4.06 | D^4.41 | D^4.08 |
+| atoms | D^2.33 | D^1.47 | D^2.70 | D^2.91 | D^2.91 | D^3.44 | D^3.60 | D^2.93 |
+
+The whole-range fit is reproducible across seeds (D^3.11, D^3.17, D^3.15 on the
+seven rungs all three seeds ran), but the tail is not: seed to seed the last four
+rungs give D^3.43 to D^4.11, because the atom count itself varies up to 1.86x with
+the seed. Read the exponent as "between 3 and 4 and drifting upward", not as a
+constant.
+
+The atom trajectory says why. The loop's cost is `sum |A_i|` over the predicate
+sequence, and that sequence is far from uniform -- at k=16:
+
+| through the loop | 50% | 80% | 90% | 95% | 99% | end |
+|---|--:|--:|--:|--:|--:|--:|
+| atoms | 786 | 1,272 | 1,457 | **44,862** | 327,737 | 569,253 |
+
+For the first 90% the atom count is *linear* in predicates processed, about 1.6
+atoms each. Then it multiplies by 390x in the last 10%.
+
+That break is exactly where the forwarding predicates end and the ACLs begin.
+Longest-prefix-match forwarding predicates are sets of IP prefixes, and prefixes
+are a **laminar family** -- any two are nested or disjoint -- so n of them induce
+at most 2n-1 atoms, which is the linear stretch. ACL predicates are five-tuple
+boxes constraining source, ports and protocol as well, so they cut *across* the
+destination-prefix nesting and each one splits a large fraction of the atoms
+already there. There are k^2/2 of them, 0.4D, and they are the entire
+superlinearity. It is also why the work is nowhere near the `predicates x atoms`
+rectangle: that ratio falls from 0.095 to 0.023 across the ladder.
+
+### What the engine choice is worth, given that exponent
+
+Because the operation count is fixed by the data plane and the engine only sets
+nanoseconds per operation, the whole runtime is one multiplication. At k=20's
+140.5M operations NDD takes 143 s, measured. Carrying the other two engines'
+k=12 per-operation costs forward puts a BDD at ~344 s and GCFLOBDD at ~562 s --
+extrapolations, not runs.
+
+And on a `D^3.3` curve a constant factor buys very little reach. NDD's **5x**
+per-operation advantage over GCFLOBDD is `5^(1/3.3)` in network size --
+**1.6x more devices** before hitting the same wall. Its 3x over a plain BDD is
+1.4x. The representation decides where you stop; the exponent decides that you
+stop.
+
+## Anatomy: why the per-operation costs differ
+
+The runtime table is stage times. This is what those times are made of, measured
+by [`netbench.Anatomy`](bench/netverify/src/netbench/Anatomy.java), which wraps
+every engine in a counting [`PacketDd`](bench/netverify/src/netbench/CountingDd.java)
+so the driver's operations can be counted and divided into the clock.
+
+```bash
+cd bench/netverify && source env.sh
+java --enable-native-access=ALL-UNNAMED -Djava.library.path="$NETBENCH_LIB" \
+  -cp "$NETBENCH_CP" netbench.Anatomy --backend ndd --data data/ft12_r300_a8_s1
+```
+
+**Every engine performs the identical number of operations.** At k=12 that is
+89,890 to build the predicates and 2,137,316 to atomise them, the same on each of
+the three run at that size; at k=10 all five agree on 58,998 and 590,195. Nothing
+here is an algorithmic difference -- the whole gap is nanoseconds per operation.
+
+At k=10, where every grammar was run: NDD 756 ns, BDD 2,176, aligned-balanced
+3,881, aligned-balanced-shared 4,023, field-grouped 6,908. Field-grouped is the
+slowest per operation and has *by far* the smallest diagrams (5 nodes median),
+because each of its nodes wraps a whole 32-bit BDD -- another reading on which
+node count and cost do not track each other.
+
+| k=12 | ns per operation | median predicate | median atom |
+|---|--:|--:|--:|
+| NDD | **809** | 1 NDD node | 5 NDD nodes |
+| BDD (JDD) | 2,446 | 32 nodes | 88 nodes |
+| GCFLOBDD aligned-balanced-shared | 4,004 | 26 nodes | 45 nodes |
+
+**The counter-intuitive row is NDD's.** Its diagrams are not smaller. An NDD
+predicate averages 2.06 NDD nodes *plus* 42.4 label-BDD nodes underneath -- about
+44 decision-diagram nodes in total, which is **more** than the BDD's 32, and more
+than GCFLOBDD's 26. NDD is three times faster while holding the larger object.
+
+So size is not what is being measured, and the usual "smaller diagram, faster
+operations" reading does not survive contact with this table. What differs is
+*where* the recursion happens.
+
+**A five-tuple predicate constrains 1.31 of the 5 fields, on average.** A FIB
+entry names a destination prefix and nothing else; most ACL rules name two fields.
+NDD skips an unconstrained field outright -- `andRec` takes the earlier field and
+recurses on one operand's children with the other left whole
+([NDD.java:1007-1019](/Users/endaytrer/src/NDD/src/main/java/org/ants/jndd/diagram/NDD.java#L1007-L1019))
+-- so its recursion is over a 2-node skeleton, and the bit-level work is handed to
+a BDD over at most 32 variables. The monolithic BDD has no such seam: it re-walks
+all 104 variables, 88 nodes for a median atom, on every operation.
+
+That NDD's label engine *is* `jdd.bdd.BDD` -- the same library as the baseline
+row, not a faster one -- makes this a controlled experiment. Same BDD code, same
+operations, same data; only the field decomposition differs, and it is worth
+**3.0x**. (That the label operations are also mostly cache hits, since every IP
+field draws prefixes from one right-aligned shared variable pool, is inference
+from the structure; NDD's caches were not instrumented.)
+
+**GCFLOBDD's cost is the opposite shape: few steps, expensive ones.**
+[`tests/workprofile.rs`](tests/workprofile.rs), with the `opcount` feature
+counting recursive calls, puts one conjunction at **5.7 recursive calls**, 5.2
+node interns, 11.9 return-map interns and 21.2 heap allocations -- roughly 330 ns
+a step, against the BDD's ~28 ns. Fifteen times fewer steps, twelve times the cost
+each.
+
+That ratio is not an implementation defect to be tuned away; it is what the
+representation is. A BDD's unit of work is three machine words in a flat array. A
+CFLOBDD's is a grouping *and a return map*: combining two of them means
+materialising the cross product of their exit vertices and then reducing it, which
+is variable-length, heap-allocated, and quadratic in the exit counts. That
+machinery is exactly what buys the shape/value decoupling -- and here there is
+nothing to buy, because the predicates are already small in every representation.
+
+```bash
+cargo run --release --features opcount --test workprofile
+cargo run --release --features opcount --test scaling
+```
+
+## The same engine on circuits
+
+The contrast is not that quantum operations are cheap. They are not:
+
+| | GHZ, 32,768 qubits | network, k=12 |
+|---|--:|--:|
+| top-level operations | ~65,500 | 2,227,206 |
+| GCFLOBDD, ns per operation | ~6,050 | 4,004 |
+| diagram | 59 nodes | 45 nodes (median atom) |
+| what that diagram holds | 2^32,768 amplitudes | a set a BDD holds in 88 nodes |
+
+A GCFLOBDD operation costs *more* microseconds in the circuit workload than in the
+network one. Two other things differ, and they decide everything.
+
+**The operation count is 34x smaller.** A circuit does work proportional to its
+gates; atomic-predicate splitting does work proportional to predicates times
+atoms, and the atom count grows 149x across this ladder.
+
+**The compression is exponential rather than a constant factor.** Measured on
+this machine, GHZ's state vector is 43 nodes at 2,048 qubits, 51 at 8,192, 59 at
+32,768 -- **eight nodes per doubling**, so O(log n) where a BDD is O(n).
+Deutsch-Jozsa at 16 qubits is 111 GCFLOBDD nodes against CUDD's 53,517, 0.212 ms
+against 442 ms; CUDD times out at 32 qubits, while GCFLOBDD reaches 65,536 in
+18 ms at 399 nodes ([BENCHMARKS.md](BENCHMARKS.md)).
+
+Both properties come from the same place. A CFLOBDD level factors a function into
+a *shape* shared by every subtree of that width and *values* carried separately in
+return maps, so a function whose halves are the same function collapses to one
+grouping per level. Parity and all-bits-equal have that property; so do the
+tensor-product states and uniform superpositions circuits produce. An address
+prefix does not: the top half is a chain of literals and the bottom half is
+`true`, two different functions, with nothing for a level to share.
+
+Which leaves the tax with nothing to pay for. Network verification pins the
+variable count at 104 forever -- the five-tuple does not grow -- so scale arrives
+as *more predicates*, not bigger ones, and there is no exponential to escape. The
+currency is throughput, and NDD buys throughput with a decomposition that fits the
+data exactly.
 
 ## Reading these results
 
@@ -259,8 +472,8 @@ which is what this workload is made of — costs 1,605 ns and 21.2 heap
 allocations. Putting the small maps inline already took that from 1,926 ns and
 54.5 allocations; what is left is mostly the `Rc` per new interned node, so the
 next move would be to how nodes are stored rather than how maps are. No grammar
-choice changes it: the three grammars differ from each other by 1.5x while all
-three sit around 1.9x behind the BDD.
+choice changes it: the three grammars differ from each other by 1.6x, and the
+best of them is 1.8x behind the BDD at k=12.
 
 The grammar result stands on its own and is actionable now: **align coarse splits
 to field boundaries, and share one subtree per width**. That is free, and it is

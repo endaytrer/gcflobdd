@@ -140,7 +140,7 @@ def main():
            ["forwarding and ACL predicates, atomic predicates, all-pairs reachability",
             f"median of 3 seeds; all five return the identical answer ({span})"],
            "netverify_runtime", IMPLS,
-           note="the two aligned-balanced grammars coincide to within 1%")
+           note="the two aligned-balanced grammars coincide to within 2.1%")
 
     figure("ap_ms", "atomic-predicate time (ms, log)",
            "Atomic predicates alone",

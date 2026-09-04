@@ -68,4 +68,12 @@ public final class Dataset {
     public int aclRuleCount() {
         return acls.values().stream().mapToInt(List::size).sum();
     }
+
+    /** Distinct devices named by the topology -- the fat-tree's switch count. */
+    public int deviceCount() {
+        java.util.Set<String> devices = new java.util.HashSet<>();
+        for (Link l : links) { devices.add(l.devA()); devices.add(l.devB()); }
+        for (FibEntry e : fib) devices.add(e.device());
+        return devices.size();
+    }
 }

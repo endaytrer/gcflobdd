@@ -22,6 +22,7 @@ use std::{
 };
 
 use crate::gcflobdd::return_map::ExitVec;
+use crate::utils::opcount::{C, bump};
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct ReductionCacheKey(usize, Vec<usize>);
@@ -95,6 +96,7 @@ impl<'grammar> Context<'grammar> {
         &mut self,
         node: GcflobddNode<'grammar>,
     ) -> Rch<GcflobddNode<'grammar>> {
+        bump(C::NodeIntern);
         let mut hasher = DefaultHasher::default();
         node.hash(&mut hasher);
         let hash = hasher.finish();
@@ -102,6 +104,7 @@ impl<'grammar> Context<'grammar> {
         if let Some(rch) = self.gcflobdd_node_table.get(&hc_node) {
             return rch.clone();
         }
+        bump(C::NodeInternNew);
         let rch = Rc::new(hc_node);
         self.gcflobdd_node_table.insert(rch.clone());
         rch
@@ -119,6 +122,7 @@ impl<'grammar> Context<'grammar> {
         rch
     }
     pub(super) fn add_return_map(&mut self, return_map: ReturnMap) -> Rch<ReturnMap> {
+        bump(C::ReturnMapIntern);
         let mut hasher = DefaultHasher::default();
         return_map.hash(&mut hasher);
         let hash = hasher.finish();
@@ -126,6 +130,7 @@ impl<'grammar> Context<'grammar> {
         if let Some(rch) = self.return_map_table.get(&hc_node) {
             return rch.clone();
         }
+        bump(C::ReturnMapInternNew);
         let rch = Rc::new(hc_node);
         self.return_map_table.insert(rch.clone());
         rch

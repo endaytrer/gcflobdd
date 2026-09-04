@@ -19,6 +19,7 @@ use std::{
 #[cfg(not(feature = "fx-hash"))]
 use std::{collections::HashMap, hash::DefaultHasher};
 use smallvec::smallvec;
+use crate::utils::opcount::{C, bump};
 
 pub struct GcflobddNode<'grammar> {
     pub(super) num_exits: usize,
@@ -467,7 +468,9 @@ impl<'grammar> GcflobddNode<'grammar> {
     ) -> ConnectionPair<'grammar> {
         // should be the same grammar
         debug_assert_eq!(lhs.grammar, rhs.grammar);
+        bump(C::PairProductCall);
         if let Some(t) = context.borrow().get_pair_product_cache(lhs, rhs) {
+            bump(C::PairProductHit);
             return t;
         }
         let ans = match (&lhs.node, &rhs.node) {
@@ -593,7 +596,9 @@ impl<'grammar> GcflobddNode<'grammar> {
                 return_map: context.borrow_mut().add_return_map(smallvec![reduce_matrix[0]]),
             };
         }
+        bump(C::PairMapCall);
         if let Some(t) = context.borrow().get_pair_map_cache(lhs, rhs, reduce_matrix) {
+            bump(C::PairMapHit);
             return t;
         }
 
@@ -926,7 +931,9 @@ impl<'grammar> GcflobddNode<'grammar> {
             return this.clone();
         }
 
+        bump(C::ReduceCall);
         if let Some(t) = context.borrow().get_reduction_cache(this, &reduce_map) {
+            bump(C::ReduceHit);
             return t;
         }
         let cache_reduce_map = reduce_map.clone();

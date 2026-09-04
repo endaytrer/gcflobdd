@@ -127,16 +127,26 @@ public final class Verifier {
     }
 
     /**
+     * Atom count before each predicate was applied, filled in by
+     * {@link #atomicPredicates}. The operation count of that loop is the sum of
+     * this list plus one extra per split, so its *shape* -- not just its last
+     * value -- is what sets how the work scales.
+     */
+    public final List<Integer> atomTrajectory = new ArrayList<>();
+
+    /**
      * @param cap give up past this many atoms (0 = no cap)
      * @return the atoms and their per-predicate index sets, or {@code null} if
      *         the cap was exceeded
      */
     public Atoms atomicPredicates(List<Integer> predicates, int cap) {
+        atomTrajectory.clear();
         List<Integer> atoms = new ArrayList<>();
         atoms.add(dd.ref(PacketDd.TRUE));
         Map<Integer, BitSet> setOf = new LinkedHashMap<>();
 
         for (int p : predicates) {
+            atomTrajectory.add(atoms.size());
             BitSet mine = new BitSet();
             if (p == PacketDd.TRUE) {          // everything is inside
                 mine.set(0, atoms.size());

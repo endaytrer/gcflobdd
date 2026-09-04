@@ -3,4 +3,7 @@ pub mod grammar;
 #[cfg(feature = "sync")]
 pub mod sync;
 
-pub(crate) mod utils;
+/// Internals exposed only so the profiling harnesses in `tests/` can reach
+/// [`utils::opcount`]. Not part of the API.
+#[doc(hidden)]
+pub mod utils;

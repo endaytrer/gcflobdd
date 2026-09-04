@@ -2,6 +2,8 @@ package netbench.backend;
 
 import netbench.Fields;
 import netbench.PacketDd;
+import com.carrotsearch.hppc.IntArrayDeque;
+import com.carrotsearch.hppc.IntHashSet;
 import org.ants.jndd.diagram.NDD;
 
 /**
@@ -54,9 +56,105 @@ public final class NddBackend implements PacketDd {
     /** The label decision diagrams under the NDD nodes -- NDD's second size axis. */
     @Override public long engineAuxNodes()       { return NDD.getLabelNodeCount(); }
 
-    /** NDD counts nodes globally only; there is no per-diagram walk. */
-    @Override public int diagramNodes(int a)     { return -1; }
-    @Override public int diagramEdges(int a)     { return -1; }
+    /**
+     * Nodes in <i>this</i> NDD diagram. NDD exposes no walk of its own, but its
+     * node and edge accessors are public, so one is written here: a BFS over
+     * distinct node ids, terminals excluded, matching what
+     * {@code jdd.bdd.BDD.nodeCount} counts for the BDD backend.
+     *
+     * <p>This counts NDD nodes only. Each edge additionally carries a label
+     * decision diagram; {@link #labelNodes} counts those, deduplicated across
+     * the whole diagram, and the two together are NDD's size.
+     */
+    @Override public int diagramNodes(int a) {
+        if (NDD.isTerminal(a)) return 0;
+        IntHashSet seen = new IntHashSet();
+        IntArrayDeque queue = new IntArrayDeque();
+        seen.add(a); queue.addLast(a);
+        int count = 0;
+        while (!queue.isEmpty()) {
+            int n = queue.removeFirst();
+            count++;
+            int start = NDD.getEdgeStart(n), num = NDD.getEdgeCount(n);
+            for (int i = 0; i < num; i++) {
+                int t = NDD.getEdgeTarget(start + i);
+                if (!NDD.isTerminal(t) && seen.add(t)) queue.addLast(t);
+            }
+        }
+        return count;
+    }
+
+    @Override public int diagramEdges(int a) {
+        if (NDD.isTerminal(a)) return 0;
+        IntHashSet seen = new IntHashSet();
+        IntArrayDeque queue = new IntArrayDeque();
+        seen.add(a); queue.addLast(a);
+        int edges = 0;
+        while (!queue.isEmpty()) {
+            int n = queue.removeFirst();
+            int start = NDD.getEdgeStart(n), num = NDD.getEdgeCount(n);
+            edges += num;
+            for (int i = 0; i < num; i++) {
+                int t = NDD.getEdgeTarget(start + i);
+                if (!NDD.isTerminal(t) && seen.add(t)) queue.addLast(t);
+            }
+        }
+        return edges;
+    }
+
+    /**
+     * Label-BDD nodes under this diagram, deduplicated across every edge --
+     * NDD's second size axis. Requires the default BDD label mode; returns -1
+     * otherwise.
+     */
+    public int labelNodes(int a) {
+        if (NDD.getLabelMode() != NDD.LabelMode.BDD) return -1;
+        if (NDD.isTerminal(a)) return 0;
+        jdd.bdd.BDD bdd = NDD.getBDDEngine();
+        IntHashSet seenNodes = new IntHashSet();
+        IntArrayDeque queue = new IntArrayDeque();
+        IntHashSet seenLabelNodes = new IntHashSet();
+        IntArrayDeque labelQueue = new IntArrayDeque();
+        seenNodes.add(a); queue.addLast(a);
+        while (!queue.isEmpty()) {
+            int n = queue.removeFirst();
+            int start = NDD.getEdgeStart(n), num = NDD.getEdgeCount(n);
+            for (int i = 0; i < num; i++) {
+                int label = NDD.getEdgeLabel(start + i);
+                if (label > 1 && seenLabelNodes.add(label)) labelQueue.addLast(label);
+                int t = NDD.getEdgeTarget(start + i);
+                if (!NDD.isTerminal(t) && seenNodes.add(t)) queue.addLast(t);
+            }
+        }
+        int count = 0;
+        while (!labelQueue.isEmpty()) {
+            int b = labelQueue.removeFirst();
+            count++;
+            int lo = bdd.getLow(b), hi = bdd.getHigh(b);
+            if (lo > 1 && seenLabelNodes.add(lo)) labelQueue.addLast(lo);
+            if (hi > 1 && seenLabelNodes.add(hi)) labelQueue.addLast(hi);
+        }
+        return count;
+    }
+
+    /** Fields this diagram actually branches on -- the ones it does not skip. */
+    public int fieldsTouched(int a) {
+        if (NDD.isTerminal(a)) return 0;
+        IntHashSet seen = new IntHashSet();
+        IntHashSet fields = new IntHashSet();
+        IntArrayDeque queue = new IntArrayDeque();
+        seen.add(a); queue.addLast(a);
+        while (!queue.isEmpty()) {
+            int n = queue.removeFirst();
+            fields.add(NDD.getField(n));
+            int start = NDD.getEdgeStart(n), num = NDD.getEdgeCount(n);
+            for (int i = 0; i < num; i++) {
+                int t = NDD.getEdgeTarget(start + i);
+                if (!NDD.isTerminal(t) && seen.add(t)) queue.addLast(t);
+            }
+        }
+        return fields.size();
+    }
 
     @Override public void gc()                   { NDD.gc(); }
     @Override public String name()               { return "ndd"; }
