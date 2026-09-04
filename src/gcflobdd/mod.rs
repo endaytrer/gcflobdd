@@ -8,6 +8,7 @@ mod node;
 mod return_map;
 #[cfg(test)]
 mod tests;
+mod value_set;
 
 use std::cell::RefCell;
 use std::ops::Not;
@@ -18,8 +19,10 @@ use crate::gcflobdd::context::{BoolOperation, Context, IntOperation};
 use crate::gcflobdd::node::{GcflobddNode, log2_add};
 use crate::gcflobdd::return_map::{complement, inverse_lookup};
 use crate::grammar::Grammar;
+use crate::utils::hash_cache::Rch;
 use connection::ConnectionT;
 use return_map::{ExitVec, ReturnMapT, SharedReturnMap};
+use value_set::{DedupKey, ValueSet};
 
 #[cfg(feature = "fx-hash")]
 use rustc_hash::FxHashMap as HashMap;
@@ -233,33 +236,19 @@ impl<'grammar> GcflobddInt<'grammar> {
 
 impl<'grammar, T> GcflobddT<'grammar, T> {
     /// The size of *this diagram*: distinct nodes reachable from its root, and
-    /// the connections leaving them.
+    /// the edges leaving them.
+    ///
+    /// Edges are counted the way the reference C++ implementation's
+    /// `CountNodesAndEdges` counts its own -- **two** per connection, plus the
+    /// entries of every distinct return map, plus the root return map -- so the
+    /// figure lines up directly against the reference's. Node counts are
+    /// convention-free and would be the same under any of them.
     ///
     /// Not the same thing as [`Context::node_count`], which counts everything
     /// interned so far, intermediates included.
     pub fn count_nodes_and_edges(&self) -> (usize, usize) {
         let (mut nodes, mut edges) = (0, 0);
         GcflobddNode::count_nodes_and_edges(
-            &self.connection.entry_point,
-            &mut HashMap::default(),
-            &mut nodes,
-            &mut edges,
-        );
-        (nodes, edges)
-    }
-
-    /// This same diagram, counted the way the reference C++ implementation's
-    /// `CountNodesAndEdges` counts its own: two edges per connection, plus the
-    /// entries of every distinct return map, plus the root return map.
-    ///
-    /// Diagnostic. [`Self::count_nodes_and_edges`] counts one edge per
-    /// connection and no return-map entries, so the two conventions differ by
-    /// far more than a constant -- on a Fourier-transformed state the return
-    /// maps alone outweigh everything else by two orders of magnitude. Compare
-    /// this figure against the reference's, never the other one.
-    pub fn count_cflobdd_convention(&self) -> (usize, usize) {
-        let (mut nodes, mut edges) = (0, 0);
-        GcflobddNode::count_cflobdd_convention(
             &self.connection.entry_point,
             &mut HashMap::default(),
             &mut HashMap::default(),
@@ -386,56 +375,57 @@ impl<'grammar, T: Clone + PartialEq> GcflobddT<'grammar, T> {
     }
 }
 
-impl<'grammar, T> GcflobddT<'grammar, T> {
-    pub fn map<V: Eq>(
-        &self,
-        f: impl Fn(&T) -> V,
-        context: &RefCell<Context<'grammar>>,
-    ) -> GcflobddT<'grammar, V> {
-        let mut new_return_handle: ReturnMapT<V> = smallvec![];
-        let mapping_array = self
-            .connection
-            .return_map
-            .iter()
-            .map(|t| {
-                let v = f(t);
-                new_return_handle
-                    .iter()
-                    .position(|x| *x == v)
-                    .unwrap_or_else(|| {
-                        new_return_handle.push(v);
-                        new_return_handle.len() - 1
-                    })
-            })
-            .collect::<ExitVec>();
-        let num_exits = new_return_handle.len();
-        let entry_point = GcflobddNode::reduce(
-            &self.connection.entry_point,
-            mapping_array.into(),
-            num_exits,
-            context,
-        );
+/// Attach one value to each exit of `entry_point`, collapse the exits whose
+/// values coincide, and reduce the node against the resulting map.
+///
+/// The tail every diagram-rebuilding operation shares. Taking the entry point
+/// and the values separately rather than a finished diagram is what makes it
+/// universal: the values may come from an existing diagram's return map, or
+/// from a node that has just been built and has no diagram around it yet.
+///
+/// `PartialEq` rather than `Eq` is what lets `f64` and `rug::Complex` through,
+/// and the interning goes through [`ValueSet`], so a diagram with thousands of
+/// exits does not pay a quadratic scan to find out which of them coincide.
+pub(in crate::gcflobdd) fn map<'grammar, V: PartialEq + DedupKey>(
+    entry_point: &Rch<GcflobddNode<'grammar>>,
+    exit_values: impl Iterator<Item = V>,
+    grammar: &'grammar Grammar,
+    context: &RefCell<Context<'grammar>>,
+) -> GcflobddT<'grammar, V> {
+    let mut interner = ValueSet::default();
+    let reduce_map: ExitVec = exit_values.map(|value| interner.intern(value)).collect();
+    let values = interner.values;
 
-        GcflobddT {
-            connection: ConnectionT {
-                entry_point,
-                return_map: Rc::new(new_return_handle.into_vec()),
-            },
-            grammar: self.grammar,
-        }
+    let num_exits = values.len();
+    GcflobddT {
+        connection: ConnectionT {
+            entry_point: GcflobddNode::reduce(entry_point, reduce_map.into(), num_exits, context),
+            return_map: Rc::new(values),
+        },
+        grammar,
     }
 }
-impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
+
+impl<'grammar, T: Copy + Eq + DedupKey> GcflobddT<'grammar, T> {
+    /// `op` applied pointwise, as a pair product followed by a [`map`] -- the
+    /// definition, and the oracle [`mk_op_pair_map`](Self::mk_op_pair_map) is
+    /// checked against.
     pub fn mk_op(
         &self,
         rhs: &Self,
         op: impl Fn(&T, &T) -> T,
         context: &RefCell<Context<'grammar>>,
     ) -> Self {
-        self.pair_product(rhs, context)
-            .map(|(a, b)| op(a, b), context)
+        let product = self.pair_product(rhs, context);
+        map(
+            &product.connection.entry_point,
+            product.connection.return_map.iter().map(|(a, b)| op(a, b)),
+            self.grammar,
+            context,
+        )
     }
-
+}
+impl<'grammar, T: Copy + Eq> GcflobddT<'grammar, T> {
     pub fn mk_op_pair_map(
         &self,
         rhs: &Self,

@@ -1,5 +1,6 @@
 use super::*;
 use crate::gcflobdd::context::Context;
+use crate::utils::{HashMap, new_hash_map};
 use std::cell::RefCell;
 
 /// Deterministic xorshift PRNG so the tests are reproducible.
@@ -851,8 +852,6 @@ fn kron_matches_dense_oracle() {
     for (ga, na) in kron_operand_grammars() {
         for (gb, nb) in kron_operand_grammars() {
             let combined = ga.concat(&gb);
-            let (va, vb) = (ga.halved(), gb.halved());
-            let combined_vector = va.concat(&vb);
             let context = RefCell::new(Context::default());
 
             let a = random_matrix(na, &mut state, 3);

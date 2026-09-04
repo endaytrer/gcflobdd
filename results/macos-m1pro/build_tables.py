@@ -9,13 +9,13 @@ R = HERE
 
 # implementation display order == categorical slot order
 IMPLS = ["gcflobdd", "cflobdd", "cudd"]
-# `ghz` is the reference's construction run by both implementations; `ghz_vec`
-# is this crate's textbook state-vector circuit, which has no reference
-# counterpart and so carries only one series.
-ALGOS = ["ghz", "ghz_vec", "bv", "dj", "qft", "grover"]
+# GHZ is the textbook state-vector circuit.  The reference implements GHZ only
+# as a 2n-qubit operator held as a matrix, a strictly larger object, so the two
+# sides of that row are not the same construction; BENCHMARKS.md says so before
+# comparing them.
+ALGOS = ["ghz_vec", "bv", "dj", "qft", "grover"]
 ALGO_LABEL = {
-    "ghz": "GHZ", "ghz_vec": "GHZ (state vector)",
-    "bv": "Bernstein-Vazirani", "dj": "Deutsch-Jozsa",
+    "ghz_vec": "GHZ", "bv": "Bernstein-Vazirani", "dj": "Deutsch-Jozsa",
     "qft": "QFT", "grover": "Grover",
 }
 
@@ -35,16 +35,14 @@ def ms(r):
 
 
 def size(r):
-    """Diagram size in the reference C++'s counting convention.
+    """Diagram size: nodes + edges, counted the way the reference C++ counts --
+    two edges per connection plus the entries of every distinct return map.
 
-    That convention counts two edges per connection plus the entries of every
-    distinct return map; this crate's own `total` counts one edge per
-    connection and no return maps, so the two are not comparable.  This crate's
-    runs therefore report both and `conv_total` is the one to read; the
-    reference's `total` is already in its own convention.  CUDD reports node
-    counts only and is labelled as such.
+    Both implementations report `total` in that one convention, so the column is
+    comparable across them directly.  CUDD reports node counts only and is
+    labelled as such.
     """
-    return r.get("conv_total") or r.get("total")
+    return r.get("total")
 
 
 # cell[(algo, qubits, impl)] = dict(ms=, size=, status=, n=, correct=)
@@ -70,8 +68,14 @@ def ladder_impl(r):
 
 
 def ladder_algo(r):
-    """`ghz-vec` is a separate algorithm row, not a variant of `ghz`."""
-    return r["algo"].replace("-", "_")
+    """Both implementations' GHZ lands in one row.
+
+    They build different objects -- this crate the n-qubit state vector, the
+    reference a 2n-qubit operator held as a matrix -- so `ghz-vec` here and
+    `ghz` there are the two halves of the same row.
+    """
+    algo = r["algo"].replace("-", "_")
+    return "ghz_vec" if algo == "ghz" else algo
 
 
 def grover_impl(r):
@@ -83,7 +87,9 @@ collect(rows("qft.csv"), "algo", ladder_impl)
 collect(rows("grover_compare.csv"), "algo", grover_impl, algo_of=lambda r: "grover")
 
 # --- the CUDD control group -------------------------------------------------
-CUDD_ALGO = {"GHZ": "ghz", "BV": "bv", "DJ": "dj", "grover": "grover", "fourier": "qft"}
+# CUDD carries the state itself, so its GHZ lines up with the state-vector
+# circuit rather than with the reference's 2n-qubit operator.
+CUDD_ALGO = {"GHZ": "ghz_vec", "BV": "bv", "DJ": "dj", "grover": "grover", "fourier": "qft"}
 for r in rows("cudd.csv"):
     algo = CUDD_ALGO.get(r["algo"])
     if algo is None:

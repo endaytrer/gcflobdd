@@ -142,12 +142,6 @@ def main():
            "netverify_runtime", IMPLS,
            note="the two aligned-balanced grammars coincide to within 2.1%")
 
-    figure("ap_ms", "atomic-predicate time (ms, log)",
-           "Atomic predicates alone",
-           ["the stage that dominates, and the one that leans hardest",
-            "on canonical equality of handles"],
-           "netverify_ap", IMPLS)
-
     figure("peak_rss_kb", "peak RSS (kB, log)",
            "Peak resident memory",
            ["whole process, so every series carries the same JVM;",

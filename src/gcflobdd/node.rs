@@ -19,7 +19,6 @@ use std::{
 #[cfg(not(feature = "fx-hash"))]
 use std::{collections::HashMap, hash::DefaultHasher};
 use smallvec::smallvec;
-use crate::utils::opcount::{C, bump};
 
 pub struct GcflobddNode<'grammar> {
     pub(super) num_exits: usize,
@@ -376,35 +375,12 @@ impl<'grammar> GcflobddNode<'grammar> {
     ///
     /// This measures one diagram, not the context's interning tables, so it is
     /// the figure to compare against another implementation's node/edge counts.
+    /// Nodes reachable from `node`, and the edges leaving them, counted the way
+    /// the reference C++ `CFLOBDDInternalNode::CountNodesAndEdges` counts them:
+    /// **two** edges per connection, plus the entries of every *distinct*
+    /// return map. Sizes reported by this crate are directly comparable with
+    /// the reference's because of it.
     pub(super) fn count_nodes_and_edges(
-        node: &Rch<Self>,
-        seen: &mut HashMap<usize, ()>,
-        nodes: &mut usize,
-        edges: &mut usize,
-    ) {
-        if seen.insert(Rc::as_ptr(node) as usize, ()).is_some() {
-            return;
-        }
-        *nodes += 1;
-        if let GcflobddNodeType::Internal(internal) = &node.node {
-            for layer in &internal.connections {
-                *edges += layer.len();
-                for connection in layer {
-                    Self::count_nodes_and_edges(&connection.entry_point, seen, nodes, edges);
-                }
-            }
-        }
-    }
-
-    /// The same diagram, counted the way the reference C++
-    /// `CFLOBDDInternalNode::CountNodesAndEdges` counts it: **two** edges per
-    /// connection, plus the entries of every *distinct* return map.
-    ///
-    /// Diagnostic only. [`Self::count_nodes_and_edges`] is this crate's own
-    /// convention -- one edge per connection, return maps not counted -- and the
-    /// two disagree by more than a constant, so a number from one convention
-    /// must never be compared against a number from the other.
-    pub(super) fn count_cflobdd_convention(
         node: &Rch<Self>,
         seen: &mut HashMap<usize, ()>,
         seen_maps: &mut HashMap<usize, ()>,
@@ -426,7 +402,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                     if seen_maps.insert(key, ()).is_none() {
                         *edges += connection.return_map.len();
                     }
-                    Self::count_cflobdd_convention(
+                    Self::count_nodes_and_edges(
                         &connection.entry_point,
                         seen,
                         seen_maps,
@@ -468,9 +444,7 @@ impl<'grammar> GcflobddNode<'grammar> {
     ) -> ConnectionPair<'grammar> {
         // should be the same grammar
         debug_assert_eq!(lhs.grammar, rhs.grammar);
-        bump(C::PairProductCall);
         if let Some(t) = context.borrow().get_pair_product_cache(lhs, rhs) {
-            bump(C::PairProductHit);
             return t;
         }
         let ans = match (&lhs.node, &rhs.node) {
@@ -596,9 +570,7 @@ impl<'grammar> GcflobddNode<'grammar> {
                 return_map: context.borrow_mut().add_return_map(smallvec![reduce_matrix[0]]),
             };
         }
-        bump(C::PairMapCall);
         if let Some(t) = context.borrow().get_pair_map_cache(lhs, rhs, reduce_matrix) {
-            bump(C::PairMapHit);
             return t;
         }
 
@@ -931,9 +903,7 @@ impl<'grammar> GcflobddNode<'grammar> {
             return this.clone();
         }
 
-        bump(C::ReduceCall);
         if let Some(t) = context.borrow().get_reduction_cache(this, &reduce_map) {
-            bump(C::ReduceHit);
             return t;
         }
         let cache_reduce_map = reduce_map.clone();

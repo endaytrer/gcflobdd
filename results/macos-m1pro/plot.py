@@ -21,10 +21,8 @@ from matplotlib.ticker import FuncFormatter, LogLocator, NullFormatter
 
 from build_tables import cell, ALGOS, ALGO_LABEL
 
-# `ghz_vec` carries only a gcflobdd series -- the reference does not run that
-# circuit -- so it belongs in the table, not in a grid whose panels compare
-# three implementations.  It keeps the 2x3 grid at five panels plus a legend.
-PLOT_ALGOS = [a for a in ALGOS if a != "ghz_vec"]
+# Five algorithms, so the 2x3 grid is five panels plus a legend.
+PLOT_ALGOS = list(ALGOS)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "figures")
@@ -202,8 +200,11 @@ def single(algo, field, ylabel, ylim, title, fname):
 # because the question the figure answers is whether the uneven grammars sit on
 # the same curve as the even ones.
 
-UNEVEN_ALGOS = ["ghz", "bv", "dj", "grover", "qft"]
-UNEVEN_TEST = {"ghz": "ghz", "bv": "bv", "dj": "dj", "grover": "grover", "qft": "qft"}
+# Keyed by the table's algorithm names; the values are the labels `uneven.sh`
+# writes, where GHZ is the state-vector circuit.
+UNEVEN_ALGOS = ["ghz_vec", "bv", "dj", "grover", "qft"]
+UNEVEN_TEST = {"ghz_vec": "ghz-vec", "bv": "bv", "dj": "dj",
+               "grover": "grover", "qft": "qft"}
 
 EVEN_STYLE = dict(c="#2a78d6", m="o", ls="-", label="power of two (balanced grammar)")
 ODD_STYLE = dict(c="#eb6834", m="D", ls=(0, (5, 2)), label="any other count (uneven grammar)")
@@ -224,7 +225,7 @@ def uneven_points():
     out = defaultdict(dict)
     for (algo, n), rs in by.items():
         out[algo][n] = (statistics.median(int(r["duration_us"]) for r in rs) / 1000,
-                        statistics.median(int(r["conv_total"]) for r in rs))
+                        statistics.median(int(r["total"]) for r in rs))
     return out
 
 

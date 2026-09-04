@@ -2,8 +2,8 @@
 //! the reference C++ CFLOBDD (`trishullab/cflobdd`).
 //!
 //! The CLI and the summary line mirror that implementation's
-//! `./cflobdd <test> <p> [seed]`, so `run_quantum.sh` can drive either binary
-//! and produce comparable CSV. Qubit count is `n = 2^p`, as there.
+//! `./cflobdd <test> <p> [seed]`, so `scripts/compare_cflobdd.sh` can drive either
+//! binary and produce comparable CSV. Qubit count is `n = 2^p`, as there.
 //!
 //! Where the two implementations differ, they differ deliberately and the
 //! difference is called out in BENCHMARKS.md: the circuits here are the
@@ -12,7 +12,7 @@
 
 use gcflobdd::gcflobdd::GcflobddT;
 use gcflobdd::gcflobdd::context::Context;
-use gcflobdd::gcflobdd::matmul::{Coefficient, MatMulValue};
+use gcflobdd::gcflobdd::matmul::{Coefficient, DedupKey, MatMulValue, float_key};
 use gcflobdd::grammar::Grammar;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -97,18 +97,13 @@ impl MatMulValue for C64 {
         let coeff = coeff.to_f64();
         Self::new(self.re * coeff, self.im * coeff)
     }
+}
+
+impl DedupKey for C64 {
     fn dedup_key(&self) -> Option<u128> {
-        // Both halves' bit patterns, with -0.0 and NaN handled as for f64.
-        let part = |x: f64| -> Option<u64> {
-            if x.is_nan() {
-                None
-            } else if x == 0.0 {
-                Some(0)
-            } else {
-                Some(x.to_bits())
-            }
-        };
-        Some(((part(self.re)? as u128) << 64) | part(self.im)? as u128)
+        // Both halves' bit patterns, each normalised the way `f64` is: a key
+        // wider than 64 bits is exactly what the `u128` is for.
+        Some((float_key(self.re)? << 64) | float_key(self.im)?)
     }
 }
 
@@ -149,6 +144,10 @@ impl Int {
         Self(rug::Integer::from(value))
     }
 }
+
+/// An exact integer has no cheap canonical bit pattern to key on, so it
+/// stays on the linear scan -- the same choice `rug::Complex` makes.
+impl DedupKey for Int {}
 
 impl MatMulValue for Int {
     fn zero_like(_sample: &Self) -> Self {
@@ -228,6 +227,9 @@ impl Real {
         self.0.prec().max(rhs.0.prec())
     }
 }
+
+/// A wide float carries a precision alongside its mantissa, so likewise.
+impl DedupKey for Real {}
 
 impl MatMulValue for Real {
     fn zero_like(sample: &Self) -> Self {
@@ -583,7 +585,7 @@ fn swap<'g, T: Amplitude>(
 }
 
 // ---------------------------------------------------------------------------
-// Reporting -- the line `run_quantum.sh` parses
+// Reporting -- the line `scripts/compare_cflobdd.sh` parses
 // ---------------------------------------------------------------------------
 
 fn report<T>(
@@ -591,23 +593,19 @@ fn report<T>(
     state: &GcflobddT<'_, T>,
     context: &RefCell<Context<'_>>,
 ) {
+    // Counted the way the reference counts, so every field here lines up
+    // directly against the reference harness's own line of the same shape.
     let (nodes, edges) = state.count_nodes_and_edges();
-    // The same diagram under the reference's counting convention. `totalCount`
-    // is NOT comparable with the reference's `totalCount` -- it counts one edge
-    // per connection and no return-map entries, where the reference counts two
-    // and all of them -- so `cflobddConvTotal` is what to line up against it.
-    let (cf_nodes, cf_edges) = state.count_cflobdd_convention();
     // `Duration:` in whole milliseconds is what the reference harness prints and
     // parses; `durationUs` is added because most of these runs finish inside one
     // millisecond, which that field cannot show.
     println!(
         "Duration: {} nodeCount: {nodes} edgeCount: {edges} totalCount: {} \
-         durationUs: {} contextNodes: {} cflobddConvTotal: {}",
+         durationUs: {} contextNodes: {}",
         elapsed.as_millis(),
         nodes + edges,
         elapsed.as_micros(),
         context.borrow().node_count(),
-        cf_nodes + cf_edges,
     );
 }
 
@@ -659,96 +657,6 @@ fn ghz(n: usize) -> bool {
     let correct = close(state.evaluate(&zeros), std::f64::consts::FRAC_1_SQRT_2)
         && close(state.evaluate(&ones), std::f64::consts::FRAC_1_SQRT_2)
         && close(state.evaluate(&mixed), 0.0);
-
-    println!("is same: {}", correct as u8);
-    report(duration, &state, &context);
-    correct
-}
-
-// ---------------------------------------------------------------------------
-// GHZ, the reference implementation's way:  a 2n-qubit register held as a
-// MATRIX, entangled by one product of CNOTs.
-//
-// `quantum_algos.cpp`'s `QuantumAlgos::GHZ` does not run the textbook circuit
-// above. It works at `level = ceil(log2 n) + 2`, which is 4n variables -- an
-// operator on 2n qubits -- and:
-//
-//   * builds `F = CNOT(0->n) * ... * CNOT(n-1->n)`, n separate CNOTs onto one
-//     shared target, multiplied together as matrices rather than applied in
-//     turn to a state;
-//   * multiplies it into `1 (x) |0..0><0..01|`, the all-ones matrix on the low
-//     n qubits tensored with a single-entry matrix on the high n;
-//   * applies a Walsh layer to all 2n qubits.
-//
-// What comes out is the (n+1)-qubit GHZ state on qubits `0..=n`, carried inside
-// a 2n-qubit operator whose remaining n-1 row bits and n column bits are free.
-// That is a strictly larger object than the state vector `ghz` builds, and the
-// point of having both is to be able to say how much of the reference's
-// diagram is the algorithm and how much is the padding.
-//
-// `Int` amplitudes for the same reason Bernstein-Vazirani uses them: with
-// unnormalised Walsh gates the surviving entries are exactly `2^n`, which is
-// past `f64` at 1024 qubits and past it by 19000 digits at 65536. The reference
-// carries the `2^-2n` inside its Walsh and leans on 100-digit floats instead;
-// either way the diagram is the same, only the numbers in the return map
-// differ.
-// ---------------------------------------------------------------------------
-
-fn ghz_matrix(n: usize) -> bool {
-    let register = Register::new(2 * n);
-    let context = RefCell::new(Context::default());
-    println!("GHZ (matrix) start... n: {n}");
-
-    let start = Instant::now();
-    let ops = Ops::new(&register, &context);
-    // F: every qubit below n controls the same target, qubit n.
-    let mut operator = controlled(&ops, 2 * n, 0, n, pauli_x::<Int>(), &context);
-    for i in 1..n {
-        let cnot = controlled(&ops, 2 * n, i, n, pauli_x::<Int>(), &context);
-        operator = operator.mk_matmul(&cnot, &context);
-    }
-    // The operand F multiplies. Both halves are matrices over n qubits, so
-    // this is one Kronecker product of the register's two top-level blocks,
-    // matching `KroneckerProduct2Vocs(NoDistinctionNode, MkBasisVector)`:
-    // index 1 over 2n variables is the assignment `0...01`, which in the
-    // interleaved order is row `0`, column `1`.
-    let low = GcflobddT::mk_constant(Int::one(), register.matrix(n), &context);
-    let high = GcflobddT::mk_basis_vector(1, Int::one(), Int::zero(), register.matrix(n), &context);
-    let mut state = low.mk_kron(&high, register.matrix(2 * n), &context);
-    state = operator.mk_matmul(&state, &context);
-    let hadamard = uniform(&ops, 2 * n, &walsh::<Int>(), &context);
-    state = hadamard.mk_matmul(&state, &context);
-    let duration = start.elapsed();
-
-    // Unnormalised, the entry at (row, col) is exactly `2^n` when the first
-    // n+1 row bits agree and the column's high half is `0..01`, and exactly 0
-    // otherwise; the rest of the row and column indices are free. Reading the
-    // first n+1 row bits is what the reference samples, and `all ones or all
-    // zeros` is what it checks.
-    let column = {
-        let mut column = vec![false; 2 * n];
-        column[2 * n - 1] = true;
-        column
-    };
-    let entry = |row: &[bool]| -> Int {
-        let assignment: Vec<bool> = row
-            .iter()
-            .zip(&column)
-            .flat_map(|(r, c)| [*r, *c])
-            .collect();
-        state.evaluate(&assignment)
-    };
-    let expected = Int::power_of_two(n as i32);
-    let zeros = vec![false; 2 * n];
-    let mut ones = vec![false; 2 * n];
-    ones[..=n].fill(true);
-    let mut mixed = ones.clone();
-    mixed[n / 2] = false;
-    let correct = entry(&zeros) == expected
-        && entry(&ones) == expected
-        && entry(&mixed) == Int::zero()
-        // Column 0: the right row, in a column the state does not occupy.
-        && state.evaluate(&vec![false; 4 * n]) == Int::zero();
 
     println!("is same: {}", correct as u8);
     report(duration, &state, &context);
@@ -979,10 +887,11 @@ fn qft(n: usize, seed: u64) -> bool {
 // Grover:  amplify one marked string out of 2^n.
 //
 // Unlike everything above, this algorithm's cost is inherently exponential:
-// it needs floor((pi/4) 2^(n/2)) iterations, whatever the representation. Two
-// ways to pay that are implemented -- evolving the state one iteration at a
-// time, and exponentiating the operator by squaring -- because the reference
-// implementation takes the second and it is where its answers go wrong.
+// it needs floor((pi/4) 2^(n/2)) iterations, whatever the representation. The
+// way to pay that here is the reference implementation's: exponentiate the
+// operator by squaring, rather than evolve the state one iteration at a time.
+// It is also where the reference's answers go wrong, which is what the
+// precision note in BENCHMARKS.md is about.
 // ---------------------------------------------------------------------------
 
 /// `m^exponent`, by binary exponentiation: `O(log exponent)` matrix multiplies
@@ -1084,7 +993,7 @@ impl Check {
     }
 }
 
-fn grover<T: Amplitude>(n: usize, seed: u64, exponentiate: bool, check: Check) -> bool {
+fn grover<T: Amplitude>(n: usize, seed: u64, check: Check) -> bool {
     // sqrt(N) = 2^(n/2) runs through the iteration count, the initial amplitude
     // and the theory check, and every amplitude type here carries an integer
     // exponent, so require the half to be one. The grammar has no such
@@ -1099,12 +1008,7 @@ fn grover<T: Amplitude>(n: usize, seed: u64, exponentiate: bool, check: Check) -
     let context = RefCell::new(Context::default());
     let secret = secret_bits(n, seed);
     let iterations = grover_iterations(n);
-    let mode = if exponentiate {
-        "exponentiate"
-    } else {
-        "iterate"
-    };
-    println!("Grover start... n: {n} seed: {seed} iterations: {iterations} mode: {mode}");
+    println!("Grover start... n: {n} seed: {seed} iterations: {iterations}");
     println!("grammar: {}", register.shape());
 
     let start = Instant::now();
@@ -1139,17 +1043,8 @@ fn grover<T: Amplitude>(n: usize, seed: u64, exponentiate: bool, check: Check) -
         "2^(-{n}/2) underflows this amplitude type"
     );
     let mut state = GcflobddT::mk_constant(initial, register.vector(n), &context);
-    if exponentiate {
-        let power = matrix_power(&operator, &iterations, ops.identity(n), &context);
-        state = power.mk_matvec(&state, &context);
-    } else {
-        let steps = iterations
-            .to_u64()
-            .expect("more than 2^64 iterations cannot be walked one at a time");
-        for _ in 0..steps {
-            state = operator.mk_matvec(&state, &context);
-        }
-    }
+    let power = matrix_power(&operator, &iterations, ops.identity(n), &context);
+    state = power.mk_matvec(&state, &context);
     let answer = (check != Check::None).then(|| peak(&state));
     let duration = start.elapsed();
 
@@ -1231,11 +1126,9 @@ fn grover<T: Amplitude>(n: usize, seed: u64, exponentiate: bool, check: Check) -
 fn usage(program: &str) -> ! {
     eprintln!(
         "usage: {program} <test> <size> [seed] [check]\n\
-         tests: testGHZAlgo | testGHZAlgoMatrix | testBVAlgo | testDJAlgo\n\
-         \x20      | testQFT | testGroversAlgo | testGroversAlgoFast\n\
-         \x20      | testGroversAlgoBig\n\
-         \x20      (ghz | ghz-matrix | bv | dj | qft | grover | grover-fast\n\
-         \x20       | grover-big)\n\
+         tests: testGHZAlgo | testBVAlgo | testDJAlgo | testQFT\n\
+         \x20      | testGroversAlgoFast | testGroversAlgoBig\n\
+         \x20      (ghz | bv | dj | qft | grover-fast | grover-big)\n\
          size:  <p> for n = 2^p qubits, matching the reference CFLOBDD harness,\n\
          \x20      or qN for exactly N qubits (e.g. q200)\n\
          check: theory (default) | answer | none -- Grover only; `theory` is\n\
@@ -1303,7 +1196,6 @@ fn smoke() {
     // QFT need an even one for their 2^(n/2).
     for qubits in [4usize, 5, 6, 7] {
         assert!(ghz(qubits), "GHZ at {qubits} qubits");
-        assert!(ghz_matrix(qubits), "GHZ (matrix) at {qubits} qubits");
         for seed in 1..=3 {
             assert!(
                 bernstein_vazirani(qubits, seed),
@@ -1320,16 +1212,12 @@ fn smoke() {
         for seed in 1..=3 {
             assert!(qft(qubits, seed), "QFT at {qubits} qubits, seed {seed}");
             assert!(
-                grover::<f64>(qubits, seed, false, Check::Theory),
-                "Grover iterated at {qubits} qubits, seed {seed}"
-            );
-            assert!(
-                grover::<f64>(qubits, seed, true, Check::Theory),
-                "Grover exponentiated at {qubits} qubits, seed {seed}"
+                grover::<f64>(qubits, seed, Check::Theory),
+                "Grover at {qubits} qubits, seed {seed}"
             );
             set_working_precision(grover_precision(qubits));
             assert!(
-                grover::<Real>(qubits, seed, true, Check::Theory),
+                grover::<Real>(qubits, seed, Check::Theory),
                 "Grover in a wide float at {qubits} qubits, seed {seed}"
             );
         }
@@ -1354,15 +1242,13 @@ fn main() {
 
     match args[1].as_str() {
         "testGHZAlgo" | "ghz" => ghz(n),
-        "testGHZAlgoMatrix" | "ghz-matrix" => ghz_matrix(n),
         "testBVAlgo" | "bv" => bernstein_vazirani(n, seed),
         "testDJAlgo" | "dj" => deutsch_jozsa(n, seed),
         "testQFT" | "qft" => qft(n, seed),
-        "testGroversAlgo" | "grover" => grover::<f64>(n, seed, false, check),
-        "testGroversAlgoFast" | "grover-fast" => grover::<f64>(n, seed, true, check),
+        "testGroversAlgoFast" | "grover-fast" => grover::<f64>(n, seed, check),
         "testGroversAlgoBig" | "grover-big" => {
             set_working_precision(grover_precision(n));
-            grover::<Real>(n, seed, true, check)
+            grover::<Real>(n, seed, check)
         }
         _ => usage(&args[0]),
     };
