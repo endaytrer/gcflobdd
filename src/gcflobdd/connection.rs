@@ -1,5 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
+use smallvec::SmallVec;
+
 use crate::{
     gcflobdd::{ReturnMapT, context::Context, node::GcflobddNode, return_map::ReturnMap},
     utils::hash_cache::Rch,
@@ -36,6 +38,10 @@ impl<'grammar, T: std::fmt::Debug> std::fmt::Debug for ConnectionT<'grammar, T> 
 }
 
 pub(crate) type Connection<'grammar> = ConnectionT<'grammar, Rch<ReturnMap>>;
+
+/// The connections leaving one level of a node. A binary grouping has two, and
+/// even a wide one stays in single digits, so they live inline.
+pub(crate) type ConnectionLayer<'grammar> = SmallVec<[Connection<'grammar>; 2]>;
 pub(crate) type ConnectionPair<'grammar> = ConnectionT<'grammar, ReturnMapT<(usize, usize)>>;
 
 impl<'grammar> Connection<'grammar> {

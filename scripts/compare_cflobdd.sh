@@ -43,7 +43,7 @@ fi
 
 mkdir -p "$(dirname "$OUT")"
 if [ "$APPEND" != 1 ] || [ ! -s "$OUT" ]; then
-  echo "impl,algo,p,qubits,seed,wall_s,peak_rss_kb,duration_ms,duration_us,nodes,edges,total,correct,verified,status" > "$OUT"
+  echo "impl,algo,p,qubits,seed,wall_s,peak_rss_kb,duration_ms,duration_us,nodes,edges,total,conv_total,correct,verified,status" > "$OUT"
 fi
 
 # Skip a side entirely when ONLY selects the other one.
@@ -53,21 +53,81 @@ run_cpp()  { [ "$ONLY" = rust ] || run "$CPP_LABEL" "$CPP_BIN"  "$@"; }
 tmp_out=$(mktemp); tmp_time=$(mktemp)
 trap 'rm -f "$tmp_out" "$tmp_time"' EXIT
 
+# --- portability: GNU vs BSD time, and a timeout that may not be installed ---
+#
+# GNU time takes `-f '%e %M'` and reports RSS in kB; BSD time (macOS) takes
+# `-l` and reports it in bytes.  Both accept `-o file`.  `timeout` is coreutils,
+# so it is absent on a stock macOS unless brew's coreutils is on PATH.
+if /usr/bin/time -f '%e %M' -o /dev/null true >/dev/null 2>&1; then
+  TIME_ARGS=(-f '%e %M'); TIME_STYLE=gnu
+else
+  TIME_ARGS=(-l); TIME_STYLE=bsd
+fi
+
+TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || true)
+
+# Stand-in for coreutils `timeout`: same 124-on-expiry contract, near enough.
+#
+# `set -m` puts the child in its own process group so `kill -- -$pid` reaches
+# the whole tree.  Killing just the direct child would orphan its grandchildren,
+# and here the direct child is /usr/bin/time -- so the grandchild is the very
+# binary being measured, which would survive the timeout and burn a core
+# through every run that follows, quietly wrecking their timings.
+# Whether the timeout fired is recorded by the watcher in a marker file: asking
+# instead whether the watcher is still alive cannot tell "I killed it" from "it
+# exited on its own", and mis-reports the status either way.
+sh_timeout() {
+  local secs=$1; shift
+  local tmp fired; tmp=$(mktemp -t shto); fired=$tmp.fired; rm -f "$fired"
+  set -m
+  "$@" & local pid=$!
+  (
+    sleep "$secs"
+    : > "$fired"
+    kill -TERM -- -"$pid" 2>/dev/null
+    sleep 2
+    kill -KILL -- -"$pid" 2>/dev/null
+  ) 2>/dev/null & local watch=$!
+  local rc=0
+  wait "$pid" 2>/dev/null || rc=$?
+  [ -e "$fired" ] && rc=124
+  kill -KILL -- -"$watch" 2>/dev/null   # cancel the watcher and its escalation sleep
+  wait "$watch" 2>/dev/null
+  kill -KILL -- -"$pid" 2>/dev/null     # nothing from this run may outlive it
+  rm -f "$tmp" "$fired"
+  set +m
+  return $rc
+}
+
 # run <impl> <binary> <algo-label> <test-name> <p> [seed]
 run() {
   local impl=$1 bin=$2 label=$3 test=$4 p=$5 seed=${6:-}
   local qubits=$((2 ** p))
 
-  /usr/bin/time -f '%e %M' -o "$tmp_time" \
-    timeout "$TIMEOUT" "$bin" "$test" "$p" $seed > "$tmp_out" 2>/dev/null
-  local rc=$?
+  local rc=0
+  if [ -n "$TIMEOUT_BIN" ]; then
+    /usr/bin/time "${TIME_ARGS[@]}" -o "$tmp_time" \
+      "$TIMEOUT_BIN" "$TIMEOUT" "$bin" "$test" "$p" $seed > "$tmp_out" 2>/dev/null
+    rc=$?
+  else
+    sh_timeout "$TIMEOUT" \
+      /usr/bin/time "${TIME_ARGS[@]}" -o "$tmp_time" "$bin" "$test" "$p" $seed \
+      > "$tmp_out" 2>/dev/null
+    rc=$?
+  fi
 
   local status=ok
   if [ $rc -eq 124 ]; then status=timeout
   elif [ $rc -ne 0 ]; then status="exit$rc"; fi
 
   local wall rss
-  read -r wall rss < <(tail -n 1 "$tmp_time" 2>/dev/null) || { wall=; rss=; }
+  if [ "$TIME_STYLE" = gnu ]; then
+    read -r wall rss < <(tail -n 1 "$tmp_time" 2>/dev/null) || { wall=; rss=; }
+  else
+    # BSD: "<real> real <user> user <sys> sys", then one line per counter.
+    wall=$(awk '/ real /{print $1; exit}' "$tmp_time" 2>/dev/null)
+    rss=$(awk '/maximum resident set size/{printf "%d", $1/1024; exit}' "$tmp_time" 2>/dev/null)
+  fi
   case "$wall" in ''|*[!0-9.]*) wall=; rss=;; esac
 
   # Three correctness spellings, matching the reference harness's outputs.
@@ -88,7 +148,7 @@ run() {
     verified=$(grep -m1 -o "matches theory: [01]" "$tmp_out" | awk '{print $3}')
   fi
 
-  local dur= us= nodes= edges= total=
+  local dur= us= nodes= edges= total= conv=
   if grep -q "^Duration: " "$tmp_out"; then
     local line; line=$(grep -m1 "^Duration: " "$tmp_out")
     dur=$(  sed -n 's/.*Duration: \([0-9]*\).*/\1/p'   <<<"$line")
@@ -98,10 +158,16 @@ run() {
     total=$(sed -n 's/.*totalCount: \([0-9]*\).*/\1/p' <<<"$line")
     # only this crate's binary reports microseconds
     us=$(   sed -n 's/.*durationUs: \([0-9]*\).*/\1/p'  <<<"$line")
+    # ...and only it reports its diagram under the reference's counting
+    # convention.  The reference's own `totalCount` is already in that
+    # convention, so `conv_total` is empty for its rows and `total` is the
+    # figure to use there; comparing this crate's `total` against the
+    # reference's would be comparing two different counters.
+    conv=$(sed -n 's/.*cflobddConvTotal: \([0-9]*\).*/\1/p' <<<"$line")
   fi
 
-  echo "$impl,$label,$p,$qubits,${seed:-na},$wall,$rss,$dur,$us,$nodes,$edges,$total,$correct,$verified,$status" >> "$OUT"
-  printf '%-5s %-4s p=%-2s q=%-4s seed=%-3s %-8s correct=%-3s verified=%-3s %sus (wall %ss)\n' \
+  echo "$impl,$label,$p,$qubits,${seed:-na},$wall,$rss,$dur,$us,$nodes,$edges,$total,$conv,$correct,$verified,$status" >> "$OUT"
+  printf '%-5s %-7s p=%-2s q=%-4s seed=%-3s %-8s correct=%-3s verified=%-3s %sus (wall %ss)\n' \
     "$impl" "$label" "$p" "$qubits" "${seed:-na}" "$status" "$correct" "$verified" "${us:-${dur:-?}000}" "${wall:-?}"
 
   [ "$status" = ok ]
@@ -111,16 +177,29 @@ run() {
 want() { [ $# -eq 0 ] && return 0; local a=$1; shift; for w in "$@"; do [ "$w" = "$a" ] && return 0; done; return 1; }
 ALGOS=("$@")
 
+# GHZ runs two ladders on this crate's side, because the reference does not run
+# the textbook circuit:
+#
+#   ghz      testGHZAlgoMatrix -- the reference's own construction, a 2n-qubit
+#                                 register held as a matrix.  This is the row
+#                                 that is comparable with `cpp,ghz`.
+#   ghz-vec  testGHZAlgo       -- the textbook circuit on an n-variable state
+#                                 vector.  A smaller object, and no reference
+#                                 number exists for it; kept because it is what
+#                                 this crate would actually do.
 if want ghz "${ALGOS[@]}"; then
   for p in $(seq "$PMIN" "$PMAX"); do
-    rust_ok=1; cpp_ok=1
-    [ ${RUST_DONE_ghz:-0} -eq 1 ] || run_rust ghz testGHZAlgo "$p" || rust_ok=0
-    [ ${CPP_DONE_ghz:-0}  -eq 1 ] || run_cpp  ghz testGHZAlgo "$p" || cpp_ok=0
+    rust_ok=1; vec_ok=1; cpp_ok=1
+    [ ${RUST_DONE_ghz:-0} -eq 1 ] || run_rust ghz     testGHZAlgoMatrix "$p" || rust_ok=0
+    [ ${VEC_DONE_ghz:-0}  -eq 1 ] || run_rust ghz-vec testGHZAlgo       "$p" || vec_ok=0
+    [ ${CPP_DONE_ghz:-0}  -eq 1 ] || run_cpp  ghz     testGHZAlgo       "$p" || cpp_ok=0
     [ $rust_ok -eq 1 ] || RUST_DONE_ghz=1
+    [ $vec_ok  -eq 1 ] || VEC_DONE_ghz=1
     [ $cpp_ok  -eq 1 ] || CPP_DONE_ghz=1
     [ "$ONLY" = rust ] && CPP_DONE_ghz=1
-    [ "$ONLY" = cpp  ] && RUST_DONE_ghz=1
-    [ ${RUST_DONE_ghz:-0} -eq 1 ] && [ ${CPP_DONE_ghz:-0} -eq 1 ] && break
+    [ "$ONLY" = cpp  ] && { RUST_DONE_ghz=1; VEC_DONE_ghz=1; }
+    [ ${RUST_DONE_ghz:-0} -eq 1 ] && [ ${VEC_DONE_ghz:-0} -eq 1 ] \
+      && [ ${CPP_DONE_ghz:-0} -eq 1 ] && break
   done
 fi
 

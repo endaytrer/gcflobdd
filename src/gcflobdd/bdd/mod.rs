@@ -10,6 +10,7 @@ use crate::{
     },
     utils::hash_cache::Rch,
 };
+use crate::gcflobdd::return_map::ExitVec;
 
 pub(super) mod connection;
 pub(super) mod node;
@@ -68,7 +69,7 @@ impl Bdd {
     pub fn pair_map(
         &self,
         rhs: &Self,
-        reduce_map: &Rch<Vec<usize>>,
+        reduce_map: &Rch<ExitVec>,
         lhs_num_exits: usize,
         rhs_num_exits: usize,
         context: &RefCell<Context<'_>>,

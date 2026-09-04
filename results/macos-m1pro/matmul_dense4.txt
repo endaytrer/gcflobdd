@@ -1,0 +1,69 @@
+warning: associated function `mk_hadamard_2` is never used
+  --> src/gcflobdd/bdd/mod.rs:27:12
+   |
+23 | impl Bdd {
+   | -------- associated function in this implementation
+...
+27 |     pub fn mk_hadamard_2(context: &RefCell<Context<'_>>) -> Self {
+   |            ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `mk_hadamard_2` is never used
+  --> src/gcflobdd/bdd/node.rs:56:12
+   |
+30 | impl BddNode {
+   | ------------ associated function in this implementation
+...
+56 |     pub fn mk_hadamard_2(context: &RefCell<Context<'_>>) -> Rch<Self> {
+   |            ^^^^^^^^^^^^^
+
+warning: `gcflobdd` (lib) generated 2 warnings
+    Finished `release` profile [optimized] target(s) in 0.01s
+     Running tests/matmul.rs (target/release/deps/matmul-532b904c29fac2f7)
+Dense 256x256 check (level 4):
+  built in 17 ms
+  A * A              6490 ms       8354 nodes     17.37MiB
+  A * v                29 ms       8363 nodes     17.65MiB
+  verified against the dense oracle in 30 ms
+Structured, 2^2 x 2^2 (level 2):
+  I * I                 1 ms          5 nodes      536.00B
+  (J-I) * I             0 ms          5 nodes      792.00B
+  I * (J-I)             0 ms          5 nodes      1.02KiB
+  (J-I)^2               0 ms          5 nodes      1.49KiB
+  I * 1                 0 ms          9 nodes      1.84KiB
+  (J-I) * e_0           0 ms          9 nodes      2.09KiB
+  (J-I) * 1             0 ms          9 nodes      2.38KiB
+  gc: 9 -> 9 nodes
+Structured, 2^8 x 2^8 (level 4):
+  I * I                 0 ms          9 nodes      856.00B
+  (J-I) * I             0 ms          9 nodes      1.49KiB
+  I * (J-I)             0 ms          9 nodes      2.12KiB
+  (J-I)^2               0 ms          9 nodes      3.65KiB
+  I * 1                 0 ms         17 nodes      4.27KiB
+  (J-I) * e_0           0 ms         17 nodes      4.90KiB
+  (J-I) * 1             0 ms         17 nodes      5.66KiB
+  gc: 17 -> 17 nodes
+Structured, 2^32 x 2^32 (level 6):
+  I * I                 0 ms         13 nodes      1.15KiB
+  (J-I) * I             0 ms         13 nodes      2.18KiB
+  I * (J-I)             0 ms         13 nodes      3.18KiB
+  I * 1                 0 ms         25 nodes      4.12KiB
+  (J-I) * e_0           0 ms         25 nodes      5.12KiB
+  gc: 25 -> 25 nodes
+Structured, 2^128 x 2^128 (level 8):
+  I * I                 0 ms         17 nodes      1.46KiB
+  (J-I) * I             0 ms         17 nodes      2.87KiB
+  I * (J-I)             0 ms         17 nodes      4.24KiB
+  I * 1                 0 ms         33 nodes      5.49KiB
+  (J-I) * e_0           0 ms         33 nodes      6.87KiB
+  gc: 33 -> 33 nodes
+Kronecker: [[1,1],[1,-1]] doubled 7 times:
+  2^2 square            0 ms          5 nodes      408.00B
+  2^4 square            0 ms          7 nodes      544.00B
+  2^8 square            0 ms          9 nodes      680.00B
+  2^16 square           0 ms         11 nodes      816.00B
+  2^32 square           0 ms         13 nodes      952.00B
+  2^64 square           0 ms         15 nodes      1.06KiB
+  2^128 square          0 ms         17 nodes      1.20KiB
+  gc: 17 -> 10 nodes

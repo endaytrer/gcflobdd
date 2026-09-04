@@ -57,7 +57,7 @@ fn test_reduce() {
     let c2 = Bdd::mk_projection(1, &context);
     let c3 = c1.pair_product(&c2, 2, 2, &context);
     let return_map = c3.return_map;
-    assert_eq!(return_map, [(0, 0), (0, 1), (1, 0), (1, 1)]);
+    assert_eq!(return_map.as_slice(), [(0, 0), (0, 1), (1, 0), (1, 1)]);
     let c3 = Bdd(c3.entry_point);
     let c4 = c3.reduce(&[0, 0, 0, 1], 2, &context);
     let path = c4.find_one_path_to(1, 4).unwrap();
@@ -74,7 +74,7 @@ fn mk_op(
 ) -> Bdd {
     let c1 = lhs.pair_product(rhs, 2, 2, context);
     let ans = Bdd(c1.entry_point);
-    assert_eq!(c1.return_map, return_map);
+    assert_eq!(c1.return_map.as_slice(), return_map);
     ans.reduce(reduce_map, num_exits, context)
 }
 #[test]

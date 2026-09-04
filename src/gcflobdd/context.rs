@@ -3,9 +3,11 @@ use crate::gcflobdd::GcflobddInt;
 use crate::gcflobdd::bdd::connection::{BddConnection, BddConnectionPair};
 use crate::gcflobdd::bdd::node::BddNode;
 use crate::gcflobdd::connection::{Connection, ConnectionPair};
+use crate::gcflobdd::matmul::controlled::{Role, Tag};
 use crate::gcflobdd::matmul::node::Valued;
 use crate::gcflobdd::node::GcflobddNode;
 use crate::gcflobdd::return_map::ReturnMap;
+use crate::grammar::GrammarNode;
 use crate::utils::hash_cache::{HashCached, Rch};
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
@@ -18,6 +20,9 @@ use std::{
     collections::{HashMap, HashSet},
     hash::DefaultHasher,
 };
+
+use crate::gcflobdd::return_map::ExitVec;
+use crate::utils::opcount::{C, bump};
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct ReductionCacheKey(usize, Vec<usize>);
@@ -57,7 +62,7 @@ pub struct Context<'grammar> {
     bdd_node_table: HashSet<Rch<BddNode>>,
 
     return_map_table: HashSet<Rch<ReturnMap>>,
-    reduce_matrix_table: HashSet<Rch<Vec<usize>>>,
+    reduce_matrix_table: HashSet<Rch<ExitVec>>,
 
     // caches
     pair_product_cache: HashMap<(usize, usize), ConnectionPair<'grammar>>,
@@ -72,6 +77,11 @@ pub struct Context<'grammar> {
     matmul_cache: HashMap<MatMulCacheKey, Valued<'grammar>>,
     /// The same, for a matrix times a vector.
     matvec_cache: HashMap<MatMulCacheKey, Valued<'grammar>>,
+    /// (grouping, role) -> the node of a controlled gate over that grouping,
+    /// with what each of its exits means. Structural like the two above -- the
+    /// gate's numbers are substituted at the top -- so one entry serves a CNOT,
+    /// a controlled phase and every amplitude type at once.
+    controlled_cache: HashMap<(usize, Role), (Rch<GcflobddNode<'grammar>>, Vec<Tag>)>,
 
     op_cache: [HashMap<(Gcflobdd<'grammar>, Gcflobdd<'grammar>), Gcflobdd<'grammar>>;
         BoolOperation::End as usize],
@@ -86,6 +96,7 @@ impl<'grammar> Context<'grammar> {
         &mut self,
         node: GcflobddNode<'grammar>,
     ) -> Rch<GcflobddNode<'grammar>> {
+        bump(C::NodeIntern);
         let mut hasher = DefaultHasher::default();
         node.hash(&mut hasher);
         let hash = hasher.finish();
@@ -93,6 +104,7 @@ impl<'grammar> Context<'grammar> {
         if let Some(rch) = self.gcflobdd_node_table.get(&hc_node) {
             return rch.clone();
         }
+        bump(C::NodeInternNew);
         let rch = Rc::new(hc_node);
         self.gcflobdd_node_table.insert(rch.clone());
         rch
@@ -110,6 +122,7 @@ impl<'grammar> Context<'grammar> {
         rch
     }
     pub(super) fn add_return_map(&mut self, return_map: ReturnMap) -> Rch<ReturnMap> {
+        bump(C::ReturnMapIntern);
         let mut hasher = DefaultHasher::default();
         return_map.hash(&mut hasher);
         let hash = hasher.finish();
@@ -117,11 +130,12 @@ impl<'grammar> Context<'grammar> {
         if let Some(rch) = self.return_map_table.get(&hc_node) {
             return rch.clone();
         }
+        bump(C::ReturnMapInternNew);
         let rch = Rc::new(hc_node);
         self.return_map_table.insert(rch.clone());
         rch
     }
-    pub(super) fn add_reduce_matrix(&mut self, op_matrix: Vec<usize>) -> Rch<Vec<usize>> {
+    pub(super) fn add_reduce_matrix(&mut self, op_matrix: ExitVec) -> Rch<ExitVec> {
         let mut hasher = DefaultHasher::default();
         op_matrix.hash(&mut hasher);
         let hash = hasher.finish();
@@ -167,7 +181,7 @@ impl<'grammar> Context<'grammar> {
         &self,
         n1: &Rch<GcflobddNode>,
         n2: &Rch<GcflobddNode>,
-        op_matrix: &Rch<Vec<usize>>,
+        op_matrix: &Rch<ExitVec>,
     ) -> Option<Connection<'grammar>> {
         let hash1 = Rc::as_ptr(n1) as usize;
         let hash2 = Rc::as_ptr(n2) as usize;
@@ -178,7 +192,7 @@ impl<'grammar> Context<'grammar> {
         &self,
         n1: &Rch<BddNode>,
         n2: &Rch<BddNode>,
-        op_matrix: &Rch<Vec<usize>>,
+        op_matrix: &Rch<ExitVec>,
     ) -> Option<BddConnection> {
         let hash1 = Rc::as_ptr(n1) as usize;
         let hash2 = Rc::as_ptr(n2) as usize;
@@ -223,6 +237,24 @@ impl<'grammar> Context<'grammar> {
         let hash1 = Rc::as_ptr(n1) as usize;
         let hash2 = Rc::as_ptr(n2) as usize;
         self.matmul_cache.insert((hash1, hash2, z1, z2), product);
+    }
+    pub(super) fn get_controlled_cache(
+        &self,
+        grammar: &Rc<GrammarNode>,
+        role: Role,
+    ) -> Option<(Rch<GcflobddNode<'grammar>>, Vec<Tag>)> {
+        self.controlled_cache
+            .get(&(Rc::as_ptr(grammar) as usize, role))
+            .cloned()
+    }
+    pub(super) fn set_controlled_cache(
+        &mut self,
+        grammar: &Rc<GrammarNode>,
+        role: Role,
+        node: (Rch<GcflobddNode<'grammar>>, Vec<Tag>),
+    ) {
+        self.controlled_cache
+            .insert((Rc::as_ptr(grammar) as usize, role), node);
     }
     pub(super) fn get_matvec_cache(
         &self,
@@ -271,7 +303,7 @@ impl<'grammar> Context<'grammar> {
         &mut self,
         n1: &Rch<GcflobddNode>,
         n2: &Rch<GcflobddNode>,
-        op_matrix: &Rch<Vec<usize>>,
+        op_matrix: &Rch<ExitVec>,
         conn: Connection<'grammar>,
     ) {
         let hash1 = Rc::as_ptr(n1) as usize;
@@ -283,7 +315,7 @@ impl<'grammar> Context<'grammar> {
         &mut self,
         n1: &Rch<BddNode>,
         n2: &Rch<BddNode>,
-        op_matrix: &Rch<Vec<usize>>,
+        op_matrix: &Rch<ExitVec>,
         conn: BddConnection,
     ) {
         let hash1 = Rc::as_ptr(n1) as usize;
@@ -361,7 +393,7 @@ impl<'grammar> Context<'grammar> {
         total_size +=
             self.return_map_table.len() * (size_of::<Rch<ReturnMap>>() + size_of::<ReturnMap>());
         total_size += self.reduce_matrix_table.len()
-            * (size_of::<Rch<Vec<usize>>>() + size_of::<Vec<usize>>());
+            * (size_of::<Rch<ExitVec>>() + size_of::<ExitVec>());
 
         total_size += self.pair_product_cache.len()
             * (size_of::<(u64, u64)>() + size_of::<ConnectionPair<'grammar>>());
@@ -379,6 +411,8 @@ impl<'grammar> Context<'grammar> {
             * (size_of::<ReductionCacheKey>() + size_of::<Rch<BddNode>>());
         total_size += (self.matmul_cache.len() + self.matvec_cache.len())
             * (size_of::<MatMulCacheKey>() + size_of::<Valued<'grammar>>());
+        total_size += self.controlled_cache.len()
+            * (size_of::<(usize, Role)>() + size_of::<Rch<GcflobddNode<'grammar>>>());
 
         total_size += self.op_cache.iter().fold(0, |acc, cache| {
             acc + cache.len() * (3 * size_of::<Gcflobdd<'grammar>>())
@@ -462,6 +496,7 @@ impl<'grammar> Context<'grammar> {
         self.bdd_pair_map_cache.clear();
         self.matmul_cache.clear();
         self.matvec_cache.clear();
+        self.controlled_cache.clear();
         Self::gcflobdd_node_table_gc(&mut self.gcflobdd_node_table);
         Self::bdd_node_table_gc(&mut self.bdd_node_table);
         // clear return map after node table gc

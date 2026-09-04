@@ -105,6 +105,28 @@ pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_n
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_nativeDiff(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    a: jint,
+    b: jint,
+) -> jint {
+    guard(&mut env, 0, || unsafe { engine_mut(ptr) }.diff(a, b))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_nativeXor(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    a: jint,
+    b: jint,
+) -> jint {
+    guard(&mut env, 0, || unsafe { engine_mut(ptr) }.xor(a, b))
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_nativeNot(
     mut env: JNIEnv,
     _class: JClass,
@@ -241,6 +263,50 @@ pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_n
 /// Existential quantification (`exists(bdd, cube)`), used only by NAT rewriting.
 /// Not yet implemented for GCFLOBDD (needs a canonicalizing reduction); the
 /// fattree benchmark does not exercise it. Raises a Java exception if called.
+/// Nodes reachable from this diagram's root, in this crate's own convention.
+/// Unlike `nativeNodeCount` (which reports the shared `Context`) this is
+/// per-handle, which is what `results/` reports as diagram size.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_nativeDiagramNodes(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    a: jint,
+) -> jint {
+    guard(&mut env, 0, || {
+        unsafe { engine_mut(ptr) }.diagram_size(a).0 as jint
+    })
+}
+
+/// Connections leaving this diagram's nodes, one edge per connection.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_nativeDiagramEdges(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    a: jint,
+) -> jint {
+    guard(&mut env, 0, || {
+        unsafe { engine_mut(ptr) }.diagram_size(a).1 as jint
+    })
+}
+
+/// This diagram's size under the reference C++ CFLOBDD's counting convention:
+/// two edges per connection plus every distinct return map's entries. See
+/// BENCHMARKS.md, "Reading the size column".
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_nativeConvTotal(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    a: jint,
+) -> jint {
+    guard(&mut env, 0, || {
+        let (n, e) = unsafe { engine_mut(ptr) }.conv_size(a);
+        (n + e) as jint
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_application_wan_bdd_verifier_common_GcflobddEngine_nativeExists(
     mut env: JNIEnv,

@@ -1,16 +1,20 @@
 use std::{cell::RefCell, rc::Rc};
 
+use smallvec::smallvec;
+
 use crate::{
     gcflobdd::{
         connection::{Connection, ConnectionT},
         context::Context,
         matmul::map::MatMulMap,
         node::{GcflobddNode, GcflobddNodeType, InternalNode},
-        return_map::inverse_lookup,
+        return_map::{ReturnMap, inverse_lookup},
     },
     grammar::{GrammarNode, GrammarNodeType},
     utils::{hash_cache::Rch, new_hash_map},
 };
+use crate::gcflobdd::return_map::ExitVec;
+use crate::gcflobdd::connection::ConnectionLayer;
 
 /// A node paired with one [`MatMulMap`] per exit: the symbolic result of a
 /// (sub-)multiplication, before any value is substituted. The values are behind
@@ -75,7 +79,7 @@ fn decompose<'grammar>(
     g1: &'grammar Rc<GrammarNode>,
     g2: &'grammar Rc<GrammarNode>,
     context: &RefCell<Context<'grammar>>,
-) -> (Connection<'grammar>, Vec<Connection<'grammar>>) {
+) -> (Connection<'grammar>, ConnectionLayer<'grammar>) {
     match &node.node {
         GcflobddNodeType::Internal(internal) => match &internal.connections[..] {
             [a_layer, b_layer] => match &a_layer[..] {
@@ -87,12 +91,12 @@ fn decompose<'grammar>(
         GcflobddNodeType::DontCare => (
             Connection::new(
                 GcflobddNode::mk_no_distinction(g1, context),
-                vec![0],
+                smallvec![0],
                 context,
             ),
-            vec![Connection::new(
+            smallvec![Connection::new(
                 GcflobddNode::mk_no_distinction(g2, context),
-                vec![0],
+                smallvec![0],
                 context,
             )],
         ),
@@ -139,7 +143,7 @@ fn normalize<'grammar>(
 ) -> Valued<'grammar> {
     let mut new_values = Vec::with_capacity(values.len());
     let mut seen = new_hash_map();
-    let mut reduce_map = Vec::with_capacity(values.len());
+    let mut reduce_map = ExitVec::with_capacity(values.len());
     for value in values {
         let next = new_values.len();
         reduce_map.push(*seen.entry(value.clone()).or_insert_with(|| {
@@ -237,12 +241,12 @@ fn assemble<'grammar>(
 ) -> Valued<'grammar> {
     let mut values: Vec<MatMulMap> = Vec::new();
     let mut seen_value = new_hash_map();
-    let mut b_connections: Vec<Connection<'grammar>> = Vec::new();
+    let mut b_connections: ConnectionLayer<'grammar> = ConnectionLayer::new();
     let mut seen_connection = new_hash_map();
-    let mut reduce_map = Vec::with_capacity(blocks.len());
+    let mut reduce_map = ExitVec::with_capacity(blocks.len());
 
     for block in blocks {
-        let mut return_map = Vec::with_capacity(block.return_map.len());
+        let mut return_map = ReturnMap::with_capacity(block.return_map.len());
         for value in block.return_map.iter() {
             let next = values.len();
             return_map.push(*seen_value.entry(value.clone()).or_insert_with(|| {
@@ -279,7 +283,7 @@ fn assemble<'grammar>(
         num_exits: values.len(),
         grammar,
         node: GcflobddNodeType::Internal(InternalNode {
-            connections: vec![vec![a_connection], b_connections],
+            connections: vec![smallvec![a_connection], b_connections],
         }),
     });
     valued(node, values)
@@ -353,42 +357,42 @@ pub(super) fn matmul_node<'grammar>(
                 if classes[2 * r] == classes[2 * r + 1] {
                     Connection::new(
                         GcflobddNode::mk_no_distinction(g2, context),
-                        vec![classes[2 * r]],
+                        smallvec![classes[2 * r]],
                         context,
                     )
                 } else {
                     Connection::new(
                         GcflobddNode::mk_distinction(0, g2, context),
-                        vec![classes[2 * r], classes[2 * r + 1]],
+                        smallvec![classes[2 * r], classes[2 * r + 1]],
                         context,
                     )
                 }
             };
-            let (a_connection, b_connections) =
+            let (a_connection, b_connections): (_, ConnectionLayer) =
                 if classes[0] == classes[2] && classes[1] == classes[3] {
                     (
                         Connection::new(
                             GcflobddNode::mk_no_distinction(g1, context),
-                            vec![0],
+                            smallvec![0],
                             context,
                         ),
-                        vec![row(0)],
+                        smallvec![row(0)],
                     )
                 } else {
                     (
                         Connection::new(
                             GcflobddNode::mk_distinction(0, g1, context),
-                            vec![0, 1],
+                            smallvec![0, 1],
                             context,
                         ),
-                        vec![row(0), row(1)],
+                        smallvec![row(0), row(1)],
                     )
                 };
             let node = context.borrow_mut().add_gcflobdd_node(GcflobddNode {
                 num_exits: values.len(),
                 grammar,
                 node: GcflobddNodeType::Internal(InternalNode {
-                    connections: vec![vec![a_connection], b_connections],
+                    connections: vec![smallvec![a_connection], b_connections],
                 }),
             });
             valued(node, values)
@@ -460,14 +464,14 @@ pub(super) fn kron_node<'grammar>(
     let (na, nb) = (n1.num_exits, n2.num_exits);
 
     let a_connection = Connection::new(n1.clone(), (0..na).collect(), context);
-    let b_connections = (0..na)
+    let b_connections: ConnectionLayer = (0..na)
         .map(|i| Connection::new(n2.clone(), (0..nb).map(|j| i * nb + j).collect(), context))
         .collect();
     let node = context.borrow_mut().add_gcflobdd_node(GcflobddNode {
         num_exits: na * nb,
         grammar,
         node: GcflobddNodeType::Internal(InternalNode {
-            connections: vec![vec![a_connection], b_connections],
+            connections: vec![smallvec![a_connection], b_connections],
         }),
     });
 

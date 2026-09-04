@@ -413,3 +413,52 @@ fn test_sat_count_matches_popcount() {
         assert_eq!(full.exp2().round() as usize, 1usize << n);
     }
 }
+
+/// Equal diagrams stay equal, and hash alike, even when their return maps are
+/// different allocations.
+///
+/// The return map lives behind an `Rc` so that cloning a diagram -- which the
+/// operation cache does three times per hit -- costs a refcount bump instead of
+/// a heap allocation. That is only sound because `Rc`'s `Hash` hashes the
+/// *pointee*: were it to hash the pointer, two diagrams built by different
+/// routes would compare equal but hash differently, and every hash-consing
+/// table keyed on a diagram would quietly start missing. Callers depend on this
+/// directly -- `gcflobdd-jni` hands Java one canonical `int` per distinct
+/// function by looking diagrams up in exactly such a table.
+#[test]
+fn equal_diagrams_hash_alike_across_separate_return_maps() {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn hash_of(g: &Gcflobdd) -> u64 {
+        let mut h = DefaultHasher::new();
+        g.hash(&mut h);
+        h.finish()
+    }
+
+    for grammar in grammar_choice!() {
+        let context = RefCell::new(Context::default());
+        let x = Gcflobdd::mk_projection(0, &grammar, &context);
+        let y = Gcflobdd::mk_projection(1, &grammar, &context);
+
+        // Two routes to the same function: `x AND y` directly, and De Morgan's
+        // `NOT(NOT x OR NOT y)`. The second builds its return map separately.
+        let direct = x.mk_and(&y, &context);
+        let de_morgan = x.mk_not().mk_or(&y.mk_not(), &context).mk_not();
+
+        assert_eq!(direct, de_morgan, "the two routes agree");
+        assert_eq!(
+            hash_of(&direct),
+            hash_of(&de_morgan),
+            "equal diagrams must hash alike, or hash-consing tables miss"
+        );
+
+        // The same must hold for a diagram and a clone of it.
+        let cloned = direct.clone();
+        assert_eq!(direct, cloned);
+        assert_eq!(hash_of(&direct), hash_of(&cloned));
+
+        // ...and unequal diagrams must still be unequal.
+        assert_ne!(direct, x);
+    }
+}
